@@ -114,7 +114,10 @@
 // [FIX-ESP-13] 2026-05-30: 7.5.0 — boot reset-detektálás esp_reset_reason()
 // alapra állítva (brownout/panic/WDT után újraindul, nem alszik el),
 // reset-ok + heap logolás hozzáadva a "30-40 perc után leáll" tünethez
-#define FIRMWARE_VERSION "7.5.0"
+// [FIX-ESP-14] 2026-05-30: 7.6.0 — SPIFFS diag napló (/diag.log): boot reset ok
+// + alacsony memória bejegyzés, BLE-n lekérdezhető a DIAG? paranccsal (DIAGCLR
+// töröl). Darabolt, nemblokkoló notify streamelés a fan karakterisztikán.
+#define FIRMWARE_VERSION "7.6.0"
 #define FIRMWARE_DATE "2026-05-30"
 
 // ===================== PINS =====================
@@ -137,6 +140,16 @@
 
 uint8_t otaBuf1[16384];
 uint8_t otaBuf2[16384];
+
+// ===================== DIAG LOG (FIX-ESP-14) =====================
+// [FIX-ESP-14] 2026-05-30: SPIFFS-be mentett diagnosztikai napló, hogy BLE-n
+// keresztül (DIAG? parancs) újraindulás után le lehessen kérdezni MI volt a
+// reset oka (pl. BROWNOUT), és hogy mikor fogyott ki a memória.
+#define DIAG_LOG_PATH "/diag.log"
+const size_t DIAG_LOG_MAX = 2048;             // a napló max. mérete (byte)
+const uint32_t LOW_HEAP_THRESHOLD = 20000;    // ez alatt "kevés memória" bejegyzés
+const size_t DIAG_CHUNK_SIZE = 120;           // BLE-n egy csomagban küldött byte
+const unsigned long DIAG_CHUNK_INTERVAL = 25; // ms két csomag között (BLE flow control)
 
 #define OTA_SERVICE_UUID "fb1e4001-54ae-4a28-9f74-dfccb248601d"
 #define OTA_CHARACTERISTIC_UUID_RX "fb1e4002-54ae-4a28-9f74-dfccb248601d"
@@ -166,6 +179,13 @@ unsigned long otaRebootAt = 0;
 // [MOD-2] Új globálisok: nemblokkoló install várakozáshoz
 bool otaInstallWaiting = false;
 unsigned long otaInstallWaitUntil = 0;
+
+// [FIX-ESP-14] Diag napló BLE-streameléshez (nemblokkoló állapotgép)
+volatile bool diagRequested = false;       // DIAG? parancs érkezett
+volatile bool diagClearRequested = false;  // DIAGCLR parancs érkezett
+bool diagStreaming = false;                // épp streamelünk-e
+File diagFile;                             // nyitott naplófájl streamelés alatt
+unsigned long diagLastChunk = 0;           // utolsó csomag ideje
 
 // ===================== FAN / BLE STRUCTS =====================
 portMUX_TYPE zoneMux = portMUX_INITIALIZER_UNLOCKED;
@@ -309,6 +329,8 @@ void failSafeMode();
 void ota_boot_flow();
 void otaInitService(BLEServer* server);
 void otaLoop();
+void diagLog(const String& line);
+void handleDiagRequest();
 bool otaIsRunning() {
   return (otaMode != OTA_NORMAL_MODE);
 }
@@ -693,6 +715,14 @@ class MyServerCallbacks : public BLEServerCallbacks {
     bleDisconnectTime = millis();
     DBG("BLE disconnected");
 
+    // [FIX-ESP-14] Ha épp diag naplót streameltünk, zárjuk le tisztán
+    if (diagStreaming) {
+      if (diagFile) diagFile.close();
+      diagStreaming = false;
+    }
+    diagRequested = false;
+    diagClearRequested = false;
+
     if (otaMode != OTA_NORMAL_MODE) {
       DBG("OTA interrupted – resetting OTA state");
       otaMode = OTA_NORMAL_MODE;
@@ -832,6 +862,31 @@ class MyCallbacks : public BLECharacteristicCallbacks {
 
       DBG_P("Roller queued: ");
       Serial.println(rollerCmd);
+
+    } else if (val.startsWith("DIAG?")) {
+      // [FIX-ESP-14] Diag napló lekérése (reset ok + lowmem history)
+      String correctPin = BLE_AUTH_PIN;
+      if (correctPin.length() > 0 && !isAuthenticated) {
+        DBG("DIAG rejected (no auth)");
+        pCharacteristic->setValue("AUTH_REQUIRED");
+        pCharacteristic->notify();
+        return;
+      }
+      diagRequested = true;
+      DBG("Diag log requested");
+
+    } else if (val.startsWith("DIAGCLR")) {
+      // [FIX-ESP-14] Diag napló törlése
+      String correctPin = BLE_AUTH_PIN;
+      if (correctPin.length() > 0 && !isAuthenticated) {
+        DBG("DIAGCLR rejected (no auth)");
+        pCharacteristic->setValue("AUTH_REQUIRED");
+        pCharacteristic->notify();
+        return;
+      }
+      diagClearRequested = true;
+      DBG("Diag clear requested");
+
     } else {
       DBG("Unknown BLE cmd");
     }
@@ -1042,6 +1097,102 @@ static const char* resetReasonStr(esp_reset_reason_t r) {
   }
 }
 
+// [FIX-ESP-14] 2026-05-30: Egy sor hozzáfűzése a diag naplóhoz. Ha a fájl
+// túllépi a DIAG_LOG_MAX méretet, megtartjuk az utolsó felét (a legfrissebb
+// bejegyzéseket), így a SPIFFS nem telik meg és a régi history kiöregszik.
+void diagLog(const String& line) {
+  // Méret-cap: csak akkor írjuk újra a fájlt, ha tényleg túl nagy (kíméli a flash-t)
+  if (FLASH.exists(DIAG_LOG_PATH)) {
+    File f = FLASH.open(DIAG_LOG_PATH, FILE_READ);
+    if (f) {
+      size_t sz = f.size();
+      if (sz > DIAG_LOG_MAX) {
+        f.seek(sz - (DIAG_LOG_MAX / 2));
+        String tail = f.readString();
+        f.close();
+        // az első (részleges) sort eldobjuk, hogy ép sorral kezdődjön
+        int nl = tail.indexOf('\n');
+        if (nl >= 0) tail = tail.substring(nl + 1);
+        File w = FLASH.open(DIAG_LOG_PATH, FILE_WRITE);  // FILE_WRITE = truncate
+        if (w) {
+          w.print(tail);
+          w.close();
+        }
+      } else {
+        f.close();
+      }
+    }
+  }
+
+  File f = FLASH.open(DIAG_LOG_PATH, FILE_APPEND);
+  if (f) {
+    f.print(line);
+    f.print('\n');
+    f.close();
+  } else {
+    DBG("diagLog write fail");
+  }
+}
+
+// [FIX-ESP-14] 2026-05-30: A DIAG? / DIAGCLR parancsok nemblokkoló kiszolgálása.
+// A BLE onWrite callback CSAK flag-et állít (diagRequested/diagClearRequested),
+// a tényleges SPIFFS olvasás és a darabolt notify itt, a fő loopban történik –
+// így nem blokkoljuk a BLE stack taskját és nem árasztjuk el a notify buffert.
+//
+// Protokoll a fan karakterisztikán (ffe1), válasz a kliensnek:
+//   0x02 "DIAG_BEGIN"   – stream kezdete
+//   <nyers napló byte-ok ... DIAG_CHUNK_SIZE-os darabokban>
+//   0x04 "DIAG_END"     – stream vége
+// A kliens a 0x02/0x04 vezérlőjelek közti byte-okat fűzi össze.
+void handleDiagRequest() {
+  if (!pCharacteristic) return;
+
+  // Törlés kérés
+  if (diagClearRequested) {
+    diagClearRequested = false;
+    if (FLASH.exists(DIAG_LOG_PATH)) FLASH.remove(DIAG_LOG_PATH);
+    pCharacteristic->setValue("DIAG_CLEARED");
+    pCharacteristic->notify();
+    DBG("Diag log cleared");
+    return;
+  }
+
+  // Stream indítása
+  if (diagRequested && !diagStreaming) {
+    diagRequested = false;
+    diagFile = FLASH.open(DIAG_LOG_PATH, FILE_READ);
+    String begin = String((char)0x02) + "DIAG_BEGIN";
+    pCharacteristic->setValue(begin.c_str());
+    pCharacteristic->notify();
+    diagStreaming = true;
+    diagLastChunk = millis();
+    return;
+  }
+
+  // Darabok küldése (időzítve, hogy ne floodoljuk a BLE-t)
+  if (diagStreaming) {
+    unsigned long now = millis();
+    if (now - diagLastChunk < DIAG_CHUNK_INTERVAL) return;
+    diagLastChunk = now;
+
+    if (diagFile && diagFile.available()) {
+      uint8_t buf[DIAG_CHUNK_SIZE];
+      int n = diagFile.read(buf, DIAG_CHUNK_SIZE);
+      if (n > 0) {
+        pCharacteristic->setValue(buf, n);
+        pCharacteristic->notify();
+      }
+    } else {
+      if (diagFile) diagFile.close();
+      String end = String((char)0x04) + "DIAG_END";
+      pCharacteristic->setValue(end.c_str());
+      pCharacteristic->notify();
+      diagStreaming = false;
+      DBG("Diag log sent");
+    }
+  }
+}
+
 // ===================== SETUP =====================
 void setup() {
   Serial.begin(115200);
@@ -1127,6 +1278,20 @@ void setup() {
   Serial.print(resetReasonStr(resetReason));
   Serial.println(F(")"));
   Serial.println(F("===================================="));
+
+  // [FIX-ESP-14] 2026-05-30: Reset ok + heap mentése a diag naplóba, hogy
+  // BLE-n (DIAG?) újraindulás után le lehessen kérdezni mi történt.
+  {
+    String entry = "[boot] reason=";
+    entry += resetReasonStr(resetReason);
+    entry += "(";
+    entry += (int)resetReason;
+    entry += ") heap=";
+    entry += ESP.getFreeHeap();
+    entry += " min=";
+    entry += ESP.getMinFreeHeap();
+    diagLog(entry);
+  }
 
   if (resetReason == ESP_RST_DEEPSLEEP) {
     // Deep sleepből ébredtünk – csak gombnyomásra induljon el a rendszer
@@ -1231,6 +1396,9 @@ void loop() {
   }
 
   otaLoop();
+
+  // [FIX-ESP-14] Diag napló BLE-kiszolgálása (csak ha nem fut OTA)
+  if (!otaIsRunning()) handleDiagRequest();
 }
 
 // ===================== STATE MACHINE =====================
@@ -1313,6 +1481,28 @@ void normalMode() {
     Serial.print(ESP.getFreeHeap());
     DBG_P(" / min: ");
     Serial.println(ESP.getMinFreeHeap());
+  }
+
+  // [FIX-ESP-14] 2026-05-30: Alacsony memória detektálás. Ha a szabad heap a
+  // küszöb alá esik, egyszer bejegyezzük a diag naplóba (BLE-n lekérdezhető).
+  // Hiszterézissel: csak akkor logolunk újra, ha közben visszaállt a heap.
+  static bool lowHeapLogged = false;
+  uint32_t freeHeapNow = ESP.getFreeHeap();
+  if (freeHeapNow < LOW_HEAP_THRESHOLD) {
+    if (!lowHeapLogged) {
+      String e = "[lowmem] heap=";
+      e += freeHeapNow;
+      e += " min=";
+      e += ESP.getMinFreeHeap();
+      e += " t=";
+      e += (nowNormalMode / 1000);
+      e += "s";
+      diagLog(e);
+      DBG("LOW HEAP logged to diag");
+      lowHeapLogged = true;
+    }
+  } else if (freeHeapNow > LOW_HEAP_THRESHOLD + 4096) {
+    lowHeapLogged = false;
   }
 
   static Timer bleRestartTimer{ 0, BLE_RESTART_DELAY };
