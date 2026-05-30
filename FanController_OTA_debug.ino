@@ -121,7 +121,10 @@
 // (hibás reset + lowmem, a POWERON/DEEPSLEEP/SW kihagyva → OTA-t nem zavarja),
 // heap-mentes (String helyett snprintf/stack), kis fájl (512B). Külön Python
 // kliens (diag_client.py) a lekérdezéshez AUTH-tal.
-#define FIRMWARE_VERSION "7.6.1"
+// [FIX-ESP-14c] 2026-05-30: 7.6.2 — átnézés utáni javítások: a diag csomagméret
+// 20B (alapértelmezett BLE MTU mellett is sértetlen napló), és lowmem-írás
+// halasztása streamelés közben (ne csonkoljuk a nyitott naplófájlt).
+#define FIRMWARE_VERSION "7.6.2"
 #define FIRMWARE_DATE "2026-05-30"
 
 // ===================== PINS =====================
@@ -152,7 +155,11 @@ uint8_t otaBuf2[16384];
 #define DIAG_LOG_PATH "/diag.log"
 const size_t DIAG_LOG_MAX = 512;              // a napló max. mérete (byte) – kicsi
 const uint32_t LOW_HEAP_THRESHOLD = 20000;    // ez alatt "kevés memória" bejegyzés
-const size_t DIAG_CHUNK_SIZE = 120;           // BLE-n egy csomagban küldött byte
+// [FIX-ESP-14c] 20 byte: ez az alapértelmezett BLE MTU (23) melletti biztos
+// notify-méret (MTU-3). Így akkor is sértetlen a napló, ha a kliens nem
+// egyezteti fel az MTU-t. A napló kicsi (<=512 B), így 20-as darabokkal is
+// gyors a letöltés (~26 csomag).
+const size_t DIAG_CHUNK_SIZE = 20;            // BLE-n egy csomagban küldött byte
 const unsigned long DIAG_CHUNK_INTERVAL = 25; // ms két csomag között (BLE flow control)
 
 #define OTA_SERVICE_UUID "fb1e4001-54ae-4a28-9f74-dfccb248601d"
@@ -1497,7 +1504,10 @@ void normalMode() {
   static bool lowHeapLogged = false;
   uint32_t freeHeapNow = ESP.getFreeHeap();
   if (freeHeapNow < LOW_HEAP_THRESHOLD) {
-    if (!lowHeapLogged) {
+    // [FIX-ESP-14c] Ne írjunk a naplóba, amíg épp streameljük (a diagFile
+    // nyitva van olvasásra) – különben ugyanazt a fájlt csonkolnánk/írnánk.
+    // A lowHeapLogged false marad, így a stream befejeztével rögzül a bejegyzés.
+    if (!lowHeapLogged && !diagStreaming) {
       char e[72];
       snprintf(e, sizeof(e), "[lowmem] heap=%u min=%u t=%lus",
                (unsigned)freeHeapNow, (unsigned)ESP.getMinFreeHeap(),
