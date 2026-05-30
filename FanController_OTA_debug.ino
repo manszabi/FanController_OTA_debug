@@ -117,7 +117,11 @@
 // [FIX-ESP-14] 2026-05-30: 7.6.0 — SPIFFS diag napló (/diag.log): boot reset ok
 // + alacsony memória bejegyzés, BLE-n lekérdezhető a DIAG? paranccsal (DIAGCLR
 // töröl). Darabolt, nemblokkoló notify streamelés a fan karakterisztikán.
-#define FIRMWARE_VERSION "7.6.0"
+// [FIX-ESP-14b] 2026-05-30: 7.6.1 — naplózás csak ténylegesen szükséges esetben
+// (hibás reset + lowmem, a POWERON/DEEPSLEEP/SW kihagyva → OTA-t nem zavarja),
+// heap-mentes (String helyett snprintf/stack), kis fájl (512B). Külön Python
+// kliens (diag_client.py) a lekérdezéshez AUTH-tal.
+#define FIRMWARE_VERSION "7.6.1"
 #define FIRMWARE_DATE "2026-05-30"
 
 // ===================== PINS =====================
@@ -146,7 +150,7 @@ uint8_t otaBuf2[16384];
 // keresztül (DIAG? parancs) újraindulás után le lehessen kérdezni MI volt a
 // reset oka (pl. BROWNOUT), és hogy mikor fogyott ki a memória.
 #define DIAG_LOG_PATH "/diag.log"
-const size_t DIAG_LOG_MAX = 2048;             // a napló max. mérete (byte)
+const size_t DIAG_LOG_MAX = 512;              // a napló max. mérete (byte) – kicsi
 const uint32_t LOW_HEAP_THRESHOLD = 20000;    // ez alatt "kevés memória" bejegyzés
 const size_t DIAG_CHUNK_SIZE = 120;           // BLE-n egy csomagban küldött byte
 const unsigned long DIAG_CHUNK_INTERVAL = 25; // ms két csomag között (BLE flow control)
@@ -329,7 +333,7 @@ void failSafeMode();
 void ota_boot_flow();
 void otaInitService(BLEServer* server);
 void otaLoop();
-void diagLog(const String& line);
+void diagLog(const char* line);
 void handleDiagRequest();
 bool otaIsRunning() {
   return (otaMode != OTA_NORMAL_MODE);
@@ -1097,25 +1101,29 @@ static const char* resetReasonStr(esp_reset_reason_t r) {
   }
 }
 
-// [FIX-ESP-14] 2026-05-30: Egy sor hozzáfűzése a diag naplóhoz. Ha a fájl
-// túllépi a DIAG_LOG_MAX méretet, megtartjuk az utolsó felét (a legfrissebb
-// bejegyzéseket), így a SPIFFS nem telik meg és a régi history kiöregszik.
-void diagLog(const String& line) {
-  // Méret-cap: csak akkor írjuk újra a fájlt, ha tényleg túl nagy (kíméli a flash-t)
+// [FIX-ESP-14] 2026-05-30: Egy sor hozzáfűzése a diag naplóhoz. Heap-mentes
+// (csak stack puffer, nincs String → nincs fragmentáció). Csak akkor írunk
+// flash-t, ha tényleg kell (lásd a hívási helyeket: csak hibás reset / lowmem).
+// Ha a fájl túllépi a DIAG_LOG_MAX-ot, megtartjuk az utolsó felét.
+void diagLog(const char* line) {
+  // Méret-cap: csak akkor írjuk újra a fájlt, ha tényleg túl nagy
   if (FLASH.exists(DIAG_LOG_PATH)) {
     File f = FLASH.open(DIAG_LOG_PATH, FILE_READ);
     if (f) {
       size_t sz = f.size();
       if (sz > DIAG_LOG_MAX) {
-        f.seek(sz - (DIAG_LOG_MAX / 2));
-        String tail = f.readString();
+        uint8_t tmp[DIAG_LOG_MAX / 2];
+        f.seek(sz - sizeof(tmp));
+        int n = f.read(tmp, sizeof(tmp));
         f.close();
         // az első (részleges) sort eldobjuk, hogy ép sorral kezdődjön
-        int nl = tail.indexOf('\n');
-        if (nl >= 0) tail = tail.substring(nl + 1);
+        int start = 0;
+        for (int i = 0; i < n; i++) {
+          if (tmp[i] == '\n') { start = i + 1; break; }
+        }
         File w = FLASH.open(DIAG_LOG_PATH, FILE_WRITE);  // FILE_WRITE = truncate
         if (w) {
-          w.print(tail);
+          if (n > start) w.write(tmp + start, n - start);
           w.close();
         }
       } else {
@@ -1161,8 +1169,8 @@ void handleDiagRequest() {
   if (diagRequested && !diagStreaming) {
     diagRequested = false;
     diagFile = FLASH.open(DIAG_LOG_PATH, FILE_READ);
-    String begin = String((char)0x02) + "DIAG_BEGIN";
-    pCharacteristic->setValue(begin.c_str());
+    static const uint8_t DIAG_BEGIN[] = { 0x02, 'D','I','A','G','_','B','E','G','I','N' };
+    pCharacteristic->setValue((uint8_t*)DIAG_BEGIN, sizeof(DIAG_BEGIN));
     pCharacteristic->notify();
     diagStreaming = true;
     diagLastChunk = millis();
@@ -1184,8 +1192,8 @@ void handleDiagRequest() {
       }
     } else {
       if (diagFile) diagFile.close();
-      String end = String((char)0x04) + "DIAG_END";
-      pCharacteristic->setValue(end.c_str());
+      static const uint8_t DIAG_END[] = { 0x04, 'D','I','A','G','_','E','N','D' };
+      pCharacteristic->setValue((uint8_t*)DIAG_END, sizeof(DIAG_END));
       pCharacteristic->notify();
       diagStreaming = false;
       DBG("Diag log sent");
@@ -1279,17 +1287,17 @@ void setup() {
   Serial.println(F(")"));
   Serial.println(F("===================================="));
 
-  // [FIX-ESP-14] 2026-05-30: Reset ok + heap mentése a diag naplóba, hogy
-  // BLE-n (DIAG?) újraindulás után le lehessen kérdezni mi történt.
-  {
-    String entry = "[boot] reason=";
-    entry += resetReasonStr(resetReason);
-    entry += "(";
-    entry += (int)resetReason;
-    entry += ") heap=";
-    entry += ESP.getFreeHeap();
-    entry += " min=";
-    entry += ESP.getMinFreeHeap();
+  // [FIX-ESP-14] 2026-05-30: Reset ok mentése a diag naplóba – DE CSAK ha
+  // tényleg hiba volt. A várt reseteket (POWERON, DEEPSLEEP-ből ébredés, és a
+  // szándékos SW reset pl. OTA után) NEM naplózzuk, így nem koptatjuk a flash-t
+  // és nem zavarjuk az OTA-t. Csak PANIC/WDT/BROWNOUT/EXT/SDIO/UNKNOWN kerül be.
+  if (resetReason != ESP_RST_POWERON &&
+      resetReason != ESP_RST_DEEPSLEEP &&
+      resetReason != ESP_RST_SW) {
+    char entry[80];
+    snprintf(entry, sizeof(entry), "[boot] reason=%s(%d) heap=%u min=%u",
+             resetReasonStr(resetReason), (int)resetReason,
+             (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
     diagLog(entry);
   }
 
@@ -1490,13 +1498,10 @@ void normalMode() {
   uint32_t freeHeapNow = ESP.getFreeHeap();
   if (freeHeapNow < LOW_HEAP_THRESHOLD) {
     if (!lowHeapLogged) {
-      String e = "[lowmem] heap=";
-      e += freeHeapNow;
-      e += " min=";
-      e += ESP.getMinFreeHeap();
-      e += " t=";
-      e += (nowNormalMode / 1000);
-      e += "s";
+      char e[72];
+      snprintf(e, sizeof(e), "[lowmem] heap=%u min=%u t=%lus",
+               (unsigned)freeHeapNow, (unsigned)ESP.getMinFreeHeap(),
+               (unsigned long)(nowNormalMode / 1000));
       diagLog(e);
       DBG("LOW HEAP logged to diag");
       lowHeapLogged = true;
