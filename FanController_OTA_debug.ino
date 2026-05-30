@@ -111,8 +111,11 @@
 // [FIX-ESP-PROD] 2026-05-24: 7.2.0 production verzió, az összes OTA javítással
 // [MOD-7] 2026-05-24: 7.3.0 — FIX-ESP-10, FIX-ESP-11, FIX-ESP-12 és MOD-6
 // (handleMultiClick) hozzáadva, custom partition table (1.3MB APP + 1.3MB SPIFFS)
-#define FIRMWARE_VERSION "7.4.0"
-#define FIRMWARE_DATE "2026-05-27"
+// [FIX-ESP-13] 2026-05-30: 7.5.0 — boot reset-detektálás esp_reset_reason()
+// alapra állítva (brownout/panic/WDT után újraindul, nem alszik el),
+// reset-ok + heap logolás hozzáadva a "30-40 perc után leáll" tünethez
+#define FIRMWARE_VERSION "7.5.0"
+#define FIRMWARE_DATE "2026-05-30"
 
 // ===================== PINS =====================
 #define RELAY_FAN1 10
@@ -1021,6 +1024,24 @@ void otaInitService(BLEServer* server) {
   pAdvertising->addServiceUUID(OTA_SERVICE_UUID);
 }
 
+// [FIX-ESP-13] 2026-05-30: Olvasható string a reset okhoz, hogy a soros
+// monitoron / PC oldalon azonnal látsszon, mi indította újra az eszközt.
+static const char* resetReasonStr(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:  return "POWERON";
+    case ESP_RST_EXT:      return "EXT";
+    case ESP_RST_SW:       return "SW";
+    case ESP_RST_PANIC:    return "PANIC";
+    case ESP_RST_INT_WDT:  return "INT_WDT";
+    case ESP_RST_TASK_WDT: return "TASK_WDT";
+    case ESP_RST_WDT:      return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    case ESP_RST_SDIO:     return "SDIO";
+    default:               return "UNKNOWN";
+  }
+}
+
 // ===================== SETUP =====================
 void setup() {
   Serial.begin(115200);
@@ -1073,8 +1094,23 @@ void setup() {
   esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL);
 
+  // [FIX-ESP-13] 2026-05-30: A korábbi logika az esp_sleep_get_wakeup_cause() +
+  // RTC_NOINIT bootMagic kombinációval próbálta megkülönböztetni a power-on-t a
+  // soft reset-től. PROBLÉMA: relék/ventilátorok kapcsolásakor (induktív
+  // terhelés, bekapcsolási áramlökés) vagy BLE adás közbeni áramcsúcsoknál
+  // BROWNOUT reset történhet, ami az ESP32-C3-on törölheti az RTC memóriát →
+  // bootMagic != BOOT_MAGIC → a kód "power-on"-nak hitte és DEEP SLEEP-be ment.
+  // Innen jött a "30-40 perc után váratlanul leáll, mintha deep sleepbe menne"
+  // tünet: a brownout reset után az eszköz elaludt ahelyett, hogy újraindult
+  // volna, és csak gombnyomásra ébredt fel.
+  //
+  // MEGOLDÁS: esp_reset_reason() használata, ami megbízhatóan megadja a reset
+  // okát. Csak VALÓDI hidegindítás (POWERON) esetén alszunk el és várunk
+  // gombnyomásra. Deep sleepből csak gombbal ébredünk. Minden HIBÁS reset
+  // (BROWNOUT, PANIC, WDT, SW) esetén ÚJRAINDULUNK és folytatjuk a normál
+  // működést (BLE advertising újraindul) — az eszköz nem marad "halott".
+  esp_reset_reason_t resetReason = esp_reset_reason();
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  bool isSoftwareReset = (bootMagic == BOOT_MAGIC);
   bootMagic = BOOT_MAGIC;
 
   Serial.println();
@@ -1085,26 +1121,38 @@ void setup() {
   Serial.print(F(" ("));
   Serial.print(F(FIRMWARE_DATE));
   Serial.println(F(")"));
+  Serial.print(F("Reset reason: "));
+  Serial.print((int)resetReason);
+  Serial.print(F(" ("));
+  Serial.print(resetReasonStr(resetReason));
+  Serial.println(F(")"));
   Serial.println(F("===================================="));
 
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO) {
-    DBG("Wake: button");
-  } else if (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED && isSoftwareReset) {
-    DBG("Wake: soft reset");
-  } else if (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED && !isSoftwareReset) {
-    DBG("Power-on → sleep");
+  if (resetReason == ESP_RST_DEEPSLEEP) {
+    // Deep sleepből ébredtünk – csak gombnyomásra induljon el a rendszer
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO) {
+      DBG("Wake: button");
+    } else {
+      DBG("Deep sleep wake (no button) → back to sleep");
+      Serial.flush();
+      delay(100);
+      pinMode(BUTTON_PIN, INPUT_PULLUP);
+      esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
+      esp_deep_sleep_start();
+    }
+  } else if (resetReason == ESP_RST_POWERON) {
+    // Valódi hidegindítás (tápra dugás) → alvás, gombnyomásra indul
+    DBG("Power-on → sleep (wait for button)");
     Serial.flush();
     delay(100);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
     esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
     esp_deep_sleep_start();
   } else {
-    DBG("Unknown wake → sleep");
-    Serial.flush();
-    delay(100);
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
-    esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
-    esp_deep_sleep_start();
+    // BROWNOUT / PANIC / WDT / SW reset → hibából való helyreállás:
+    // FOLYTATJUK a normál működést (NEM alszunk el), így az eszköz
+    // automatikusan újraindul és újra elérhető lesz BLE-n.
+    DBG("Fault/SW reset → resuming normal operation");
   }
 
   DBG("GPIO init");
@@ -1256,6 +1304,15 @@ void normalMode() {
 
     DBG_P("To sleep (min): ");
     Serial.println(remainingMs / 60000);
+
+    // [FIX-ESP-13] 2026-05-30: Heap monitorozás. Ha a "Free heap" 30-40 perc
+    // alatt folyamatosan csökken, memóriaszivárgás van (pl. BLE újracsatlakozási
+    // ciklusok). A "min" a valaha mért legkisebb szabad heap — ha ez vészesen
+    // alacsony, az heap-kifogyás miatti összeomlást (és resetet) okozhat.
+    DBG_P("Free heap: ");
+    Serial.print(ESP.getFreeHeap());
+    DBG_P(" / min: ");
+    Serial.println(ESP.getMinFreeHeap());
   }
 
   static Timer bleRestartTimer{ 0, BLE_RESTART_DELAY };
