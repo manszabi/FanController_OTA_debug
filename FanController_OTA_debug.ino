@@ -1613,7 +1613,7 @@ void failSafeMode() {
     digitalWrite(LED_YELLOW, blinkState);
   }
 
-  if (nowfailSafeMode - failStart >= 60000) {
+  if (nowfailSafeMode - failStart >= 10000) {
     DBG("Failsafe timeout → sleep");
     enterDeepSleep("failsafe-timeout");
   }
