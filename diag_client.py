@@ -10,6 +10,8 @@ A firmware (v7.6.1+) a fan karakterisztikán (ffe1) szolgálja ki a diag parancs
 A napló csak akkor tartalmaz bejegyzést, ha tényleg történt valami:
     [boot]   reason=BROWNOUT(11) heap=... min=...   -> hibás reset (pl. brownout)
     [lowmem] heap=... min=... t=...s                -> kevés szabad memória
+    [sleep]  src=...                                 -> honnan indult a deep sleep
+    [ota]    bad magic=0x.. size=...                 -> rossz/sérült firmware fájl (nem 0xE9)
 
 Használat:
     pip install bleak

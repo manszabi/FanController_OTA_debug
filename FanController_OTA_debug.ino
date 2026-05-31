@@ -127,8 +127,13 @@
 // [FIX-ESP-15] 2026-05-30: 7.6.3 — enterDeepSleep() forrásának naplózása
 // ([sleep] src=button-longpress/idle-timeout/failsafe-timeout), hogy a
 // szándékos alvás megkülönböztethető legyen a brownout/panik leállástól.
-#define FIRMWARE_VERSION "7.6.3"
-#define FIRMWARE_DATE "2026-05-30"
+// [FIX-ESP-16] 2026-05-31: 7.6.4 — OTA magic-byte ellenőrzés az Update.begin()
+// előtt. Ha a feltöltött bináris első byte-ja nem 0xE9, érthető "rossz firmware"
+// hibát adunk a félrevezető "Decryption error" helyett (amit az arduino-esp32
+// Update könyvtár U_AES_DECRYPT_AUTO módja dob nem-0xE9 fejlécre). A hiba a
+// diag naplóba is bekerül ([ota] bad magic=0x..).
+#define FIRMWARE_VERSION "7.6.4"
+#define FIRMWARE_DATE "2026-05-31"
 
 // ===================== PINS =====================
 #define RELAY_FAN1 10
@@ -550,6 +555,35 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
 
   DBG_P("updateSize = ");
   Serial.println(updateSize);
+
+  // [FIX-ESP-16] 2026-05-31: magic-byte ellenőrzés az Update.begin() ELŐTT.
+  // Egy érvényes ESP32 app-image első byte-ja 0xE9 (ESP_IMAGE_HEADER_MAGIC).
+  // Ha nem az, az arduino-esp32 Update könyvtár U_AES_DECRYPT_AUTO módban
+  // titkosított image-nek hiszi a binárist, megpróbálja visszafejteni kulcs
+  // nélkül, és a félrevezető "Decryption error"-t dobja az Update.end()-nél.
+  // A valódi ok ilyenkor: ROSSZ fájl lett feltöltve (nem az app .ino.bin,
+  // hanem pl. merged.bin offszettel, .gz tömörített, vagy sérült átvitel).
+  // Itt előre elkapjuk és ÉRTHETŐ hibát adunk a "Decryption error" helyett.
+  int magic = updateSource.peek();
+  DBG_P("First byte (magic) = 0x");
+  Serial.println(magic, HEX);
+  if (magic != 0xE9) {
+    DBG("ERR: bad firmware magic (not 0xE9)");
+    char m[40];
+    snprintf(m, sizeof(m), "[ota] bad magic=0x%02X size=%u", (unsigned)(magic & 0xFF), (unsigned)updateSize);
+    diagLog(m);
+
+    result += "ERR: rossz firmware (magic=0x";
+    char hx[4];
+    snprintf(hx, sizeof(hx), "%02X", (unsigned)(magic & 0xFF));
+    result += hx;
+    result += ", nem app .bin)";
+    DBG("=== OTA DEBUG END ===");
+
+    esp_task_wdt_add(NULL);
+    sendOtaResult(result);
+    return;
+  }
 
   // 2) Update.begin
   DBG("Calling Update.begin()...");
