@@ -1,0 +1,183 @@
+# FanController Diagnosztikai & Teszt Eszközök
+
+## Installáció
+
+Szükséges Python 3.8+ és a `bleak` BLE könyvtár:
+
+```bash
+pip install bleak
+```
+
+## Eszközök
+
+### 1. `diag_client.py` — Diag napló lekérdezése BLE-n
+
+A `/diag.log` fájlt olvassa le az eszközről (reset okok, lowmem események, sleep okokokat ír fel):
+
+```
+[boot]   reason=BROWNOUT(11) heap=... min=...
+[lowmem] heap=... min=... t=...s
+[sleep]  src=button-longpress
+[ota]    bad magic=0x.. size=...
+```
+
+**Használat:**
+
+```bash
+# Parancssorból:
+python3 diag_client.py
+
+# Windows .bat wrapper-rel (kettős kattintás is működik):
+diag_client.bat
+
+# Paraméterekkel:
+python3 diag_client.py --pin 123456 --address AA:BB:CC:DD:EE:FF --clear
+```
+
+**Opciók:**
+- `--pin PIN` — BLE AUTH PIN (alapért: 123456)
+- `--address MAC` — BLE cím (ha nincs, név alapján keres)
+- `--clear` — napló törlése az lekérés után
+- `--timeout N` — lekérés timeout másodpercben (alapért: 15)
+
+**Tip:** Futtatás közben időnként ellenőrizve (fejlesztéskor/edzéskor) azonnal látható az új reset/lowmem eset.
+
+---
+
+### 2. `fan_stress.py` — Fokozat-edzés / stressz-teszt
+
+Folyamatosan váltogatja a ventilátor fokozatokat BLE-n, hogy gyorsabban reprodukálható legyen a "30-40 perc után leáll" hiba:
+
+- Relé ki/be kapcsolgatás + fokozat-váltás = a legdurvább terhelés (induktív surge + BLE TX)
+- Figyeli a BLE kapcsolat-leállás **idejét** és a **váltásszámot**
+- Opcionálisan percenkénti diag-napló ellenőrzés az új reset-ek után
+
+**Használat:**
+
+```bash
+# Parancssorból — végtelen edzés, 1→2→3 fokozat, 3 mp-enként:
+python3 fan_stress.py
+
+# Windows:
+fan_stress.bat
+
+# 45 perc, durva relé-stressz, percenkénti reset-ellenőrzés, CSV naplóval:
+python3 fan_stress.py --duration 2700 --roller-toggle --check-interval 60 --log stress.csv
+
+# Gyors edzés újracsatlakozással (leállás után folytatja):
+python3 fan_stress.py --dwell 1 --reconnect
+
+# Egyedi fokozat-sorrend:
+python3 fan_stress.py --levels 1,1,2,2,3,3
+```
+
+**Opciók:**
+- `--pin PIN` — BLE AUTH PIN (alapért: 123456)
+- `--address MAC` — BLE cím
+- `--levels L1,L2,...` — fokozatok sorrendje (alapért: 1,2,3; 0 = ki)
+- `--dwell N` — másodperc fokozatonként (alapért: 3)
+- `--roller-toggle` — ROLLER ki/be a ciklusok között (durvább stressz)
+- `--off-dwell N` — OFF állapot hossza (alapért: 1)
+- `--cycles N` — ciklusok száma (0 = végtelen)
+- `--duration N` — max futásidő másodpercben (0 = korlátlan)
+- `--check-interval N` — DIAG napló-ellenőrzés N mp-enként (0 = ki)
+- `--reconnect` — leállás után újracsatlakozás
+- `--reconnect-wait N` — várakozás újracsatlakozás előtt (alapért: 5)
+- `--log FÁJL` — naplózás CSV/szöveges fájlba
+
+**Tipikus eredmények:**
+
+| Kimenet | Jelentés |
+|---|---|
+| `KAPCSOLAT MEGSZAKADT 32.1 perc után` | reprodukáltad a leállást |
+| `ÚJ RESET a diag naplóban! [boot]` + `reason=BROWNOUT` | tápoldali tüske (relé surge) |
+| `ÚJ [lowmem]` | memóriaszivárgás |
+| nincs szakadás 1+ órán | a javítások működnek |
+
+---
+
+### 3. `ota_diagnostic.py` — OTA firmware.bin diagnózis
+
+A firmware fájl első byte-jait ellenőrzi (0xE9 = OK, más = rossz fájl → "Decryption error" az eszközön):
+
+```bash
+# Parancssorból:
+python3 ota_diagnostic.py firmware.bin
+
+# Windows:
+ota_diagnostic.bat firmware.bin
+```
+
+**Miért kell:** Az OTA "Decryption error" gyakran azt jelenti, hogy rossz fájlt küldtél (pl. `.merged.bin`, `.partitions.bin`, vagy gzip-elt), nem a titkosítással van baj.
+
+---
+
+## Workflow: a "30-40 perc után leáll" hibát keresve
+
+1. **Jelenlegi állapot ellenőrzése:**
+   ```bash
+   python3 diag_client.py
+   ```
+   Nézd meg, van-e `[boot] reason=BROWNOUT` → tápoldali instabilitás
+   vagy `[lowmem]` → memóriaszivárgás.
+
+2. **Edzés indítása (15-60 perc):**
+   ```bash
+   python3 fan_stress.py --duration 3600 --check-interval 60 --log stress.log
+   ```
+   Várd meg, hogy "leálljon", vagy akár 1 órán át fut (akkor jó a javítás).
+
+3. **Eredmény elemzése:**
+   - Mikor állt le? Hány váltás után?
+   - `stress.log` és `diag_client.py` output → új `[boot] reason=...` vagy `[lowmem]`?
+
+4. **OTA frissítés előtt:**
+   ```bash
+   python3 ota_diagnostic.py FanController_OTA_debug.ino.bin
+   ```
+   Ha "magic=0xE9", akkor OK. Ha nem, rossz fájlt választottál.
+
+---
+
+## Gyakori Problémák
+
+### "ModuleNotFoundError: No module named 'bleak'"
+```bash
+pip install bleak
+```
+
+### Az ablak azonnal bezáródik
+**Windows, kettős kattintás .py-ra:** Az ablak vár az Enterre (finally blokk). Lásd a kimenetet, majd nyomj Entert.
+
+**Linux/Mac parancssor:** Ez nem szokott lenni. Ha mégis, adj át `2>&1` a végéhez: `python3 diag_client.py 2>&1`.
+
+### "Nem található a FanController"
+- Az eszköz BLE advertising-ja ki van-e kapcsolva?
+- `--address` megadása: `python3 diag_client.py --address AA:BB:CC:DD:EE:FF`
+
+### "AUTH sikertelen"
+- Rossz PIN? Alapért: `123456`. Próbáld `--pin`-nel.
+- Auth lockout (5 sikertelen kísérlet után) → reset gombbal térj vissza, vagy várd meg a ~5 perces feloldást.
+
+---
+
+## Videó / Közvetlen Monitorozás (fejlesztéskor)
+
+Ha USB-soros hozzáféréssel rendelkezel (nem csak BLE), a serial output többet mutat:
+
+```bash
+# Arduino IDE Series Monitor, 115200 baud
+# Vagy (Linux): cat /dev/ttyUSB0
+# Vagy (Windows): com port -> Putty, 115200
+```
+
+Figyeld az `otaLoop()` vagy `stateMachineStep()` sorát, ha "leállást" suspectzalsz.
+
+---
+
+## Verzió / Firmware
+
+- **v7.6.3**: Diag napló bevezetése (reset ok, lowmem, sleep source)
+- **v7.6.4**: OTA magic-byte ellenőrzés a félrevezető "Decryption error" helyett
+
+Frissítés után a diag napló `[sleep]`, `[boot]`, `[lowmem]`, `[ota]` sorokat fogja rögzíteni.
