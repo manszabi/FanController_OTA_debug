@@ -128,4 +128,12 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    try:
+        raise SystemExit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        print("\nMegszakítva (Ctrl+C).")
+    finally:
+        import sys
+        if sys.platform == "win32":
+            input("\nNyomj Entert az ablak bezárásához...")
+
