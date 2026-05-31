@@ -124,7 +124,10 @@
 // [FIX-ESP-14c] 2026-05-30: 7.6.2 — átnézés utáni javítások: a diag csomagméret
 // 20B (alapértelmezett BLE MTU mellett is sértetlen napló), és lowmem-írás
 // halasztása streamelés közben (ne csonkoljuk a nyitott naplófájlt).
-#define FIRMWARE_VERSION "7.6.2"
+// [FIX-ESP-15] 2026-05-30: 7.6.3 — enterDeepSleep() forrásának naplózása
+// ([sleep] src=button-longpress/idle-timeout/failsafe-timeout), hogy a
+// szándékos alvás megkülönböztethető legyen a brownout/panik leállástól.
+#define FIRMWARE_VERSION "7.6.3"
 #define FIRMWARE_DATE "2026-05-30"
 
 // ===================== PINS =====================
@@ -327,7 +330,7 @@ void deactivateRoller();
 void enableRelays();
 void disableRelays();
 void handleLEDs(unsigned long currentMillis);
-void enterDeepSleep();
+void enterDeepSleep(const char* reason);
 void handleClick();
 void handleLongPressStop();
 void handleDoubleClick();
@@ -1017,7 +1020,7 @@ void handleLongPressStop() {
   if (otaIsRunning()) return;
 
   DBG("Button: long → sleep");
-  enterDeepSleep();
+  enterDeepSleep("button-longpress");
 }
 
 void handleDoubleClick() {
@@ -1475,7 +1478,7 @@ void normalMode() {
   if (inactivityTimer.elapsed(nowNormalMode)) {
     if (!bleConnected && !manualMode) {
       DBG("Idle → sleep");
-      enterDeepSleep();
+      enterDeepSleep("idle-timeout");
     }
   }
 
@@ -1612,7 +1615,7 @@ void failSafeMode() {
 
   if (nowfailSafeMode - failStart >= 60000) {
     DBG("Failsafe timeout → sleep");
-    enterDeepSleep();
+    enterDeepSleep("failsafe-timeout");
   }
 }
 
@@ -1862,10 +1865,23 @@ void handleLEDs(unsigned long currentMillis) {
 }
 
 // ===================== DEEP SLEEP =====================
-void enterDeepSleep() {
+void enterDeepSleep(const char* reason) {
   Serial.println(F("===================================="));
   Serial.println(F("Enter deep sleep"));
+  Serial.print(F("Reason: "));
+  Serial.println(reason);
   Serial.println(F("===================================="));
+
+  // [FIX-ESP-15] 2026-05-30: Honnan indult a deep sleep, a diag naplóba is.
+  // Így teszteléskor megkülönböztethető a SZÁNDÉKOS alvás (gomb / tétlenség /
+  // failsafe) a brownout/panik miatti "leállástól". Heap-mentes (stack puffer).
+  {
+    char e[64];
+    snprintf(e, sizeof(e), "[sleep] src=%s heap=%u t=%lus",
+             reason, (unsigned)ESP.getFreeHeap(),
+             (unsigned long)(millis() / 1000));
+    diagLog(e);
+  }
 
   if (bleEnabled) {
     DBG("BLE stop");
