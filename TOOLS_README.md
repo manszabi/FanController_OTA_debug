@@ -24,15 +24,14 @@ A `/diag.log` fájlt olvassa le az eszközről (reset okok, lowmem események, s
 **Használat:**
 
 ```bash
-# Parancssorból:
+# Parancssorból / PowerShell-ből:
 python3 diag_client.py
-
-# Windows .bat wrapper-rel (kettős kattintás is működik):
-diag_client.bat
 
 # Paraméterekkel:
 python3 diag_client.py --pin 123456 --address AA:BB:CC:DD:EE:FF --clear
 ```
+
+**Windows SmartScreen blokk:** Ha az inteligens alkalmazáskezelés nem engedi futtatni, használj **PowerShell**-t (Win+X → PowerShell) vagy **cmd**-t, ne kettős kattintást.
 
 **Opciók:**
 - `--pin PIN` — BLE AUTH PIN (alapért: 123456)
@@ -55,11 +54,8 @@ Folyamatosan váltogatja a ventilátor fokozatokat BLE-n, hogy gyorsabban reprod
 **Használat:**
 
 ```bash
-# Parancssorból — végtelen edzés, 1→2→3 fokozat, 3 mp-enként:
+# Parancssorból / PowerShell-ből — végtelen edzés, 1→2→3 fokozat, 3 mp-enként:
 python3 fan_stress.py
-
-# Windows:
-fan_stress.bat
 
 # 45 perc, durva relé-stressz, percenkénti reset-ellenőrzés, CSV naplóval:
 python3 fan_stress.py --duration 2700 --roller-toggle --check-interval 60 --log stress.csv
@@ -146,10 +142,29 @@ ota_diagnostic.bat firmware.bin
 pip install bleak
 ```
 
-### Az ablak azonnal bezáródik
-**Windows, kettős kattintás .py-ra:** Az ablak vár az Enterre (finally blokk). Lásd a kimenetet, majd nyomj Entert.
+### Windows: SmartScreen blokkolja a futtatást
+Az "inteligens alkalmazáskezelés" (Windows Defender SmartScreen) blokkolja a letöltött .py és .bat fájlokat.
 
-**Linux/Mac parancssor:** Ez nem szokott lenni. Ha mégis, adj át `2>&1` a végéhez: `python3 diag_client.py 2>&1`.
+**Megoldás: PowerShell vagy cmd parancssor használata**
+
+1. **PowerShell megnyitása:**
+   - Win+X → PowerShell
+   - vagy: Start Menu → "PowerShell" keresés → jobb klikk → "Run as administrator"
+
+2. **Mappához navigálás és futtatás:**
+   ```powershell
+   cd C:\Users\[felhasználó]\Desktop\FanController_OTA_debug
+   python3 diag_client.py
+   ```
+
+3. **Alternatíva: cmd parancssor**
+   ```cmd
+   C:\>
+   cd Documents\FanController_OTA_debug
+   python3 fan_stress.py --duration 2700
+   ```
+
+**Megjegyzés:** Ha az ablak még így is bezáródik, a Python scriptek már pauzálnak az Enterre: nyomj Entert az ablak bezárásához.
 
 ### "Nem található a FanController"
 - Az eszköz BLE advertising-ja ki van-e kapcsolva?
