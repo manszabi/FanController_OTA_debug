@@ -24,9 +24,13 @@ def analyze_firmware(bin_path):
             magic = f.read(1)
 
         if magic[0] == 0xE9:
-            print("✓ Valid ESP32 firmware signature (0xE9)")
+            print("✓ Valid ESP32 app image magic (0xE9) — OTA-ra alkalmas")
         else:
-            print(f"✗ Invalid magic byte: 0x{magic[0]:02X} (expected 0xE9)")
+            print(f"✗ HIBÁS magic byte: 0x{magic[0]:02X} (0xE9 kellene)")
+            print("  → Ez okozza a 'Decryption error'-t az eszközön!")
+            print("  → Rossz fájlt töltesz fel. A helyes az app '*.ino.bin'.")
+            if magic[0] == 0x1F:
+                print("  → 0x1F: ez egy GZIP tömörített fájl, nem nyers .bin.")
             return False
 
         return True
@@ -49,7 +53,7 @@ def check_partition_table():
             if line.startswith('#') or not line:
                 continue
             parts = [p.strip() for p in line.split(',')]
-            if len(parts) >= 4:
+            if len(parts) >= 5:
                 name, typ, subtype, offset, size = parts[0], parts[1], parts[2], parts[3], parts[4]
                 if typ == 'app':
                     offset_dec = int(offset, 16)
