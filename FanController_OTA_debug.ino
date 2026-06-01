@@ -75,7 +75,6 @@
 #include <OneButton.h>
 #include "esp_sleep.h"
 #include "esp_task_wdt.h"
-#include "esp_intr_alloc.h"
 #include <Update.h>
 #include "FS.h"
 #include "SPIFFS.h"
@@ -133,8 +132,8 @@
 // hibát adunk a félrevezető "Decryption error" helyett (amit az arduino-esp32
 // Update könyvtár U_AES_DECRYPT_AUTO módja dob nem-0xE9 fejlécre). A hiba a
 // diag naplóba is bekerül ([ota] bad magic=0x..).
-// [FIX-ESP-17] 2026-05-31: 7.6.5 — enterDeepSleep() interrupt cleanup
-// és stabilizáció (INT_WDT(5) reset ellen).
+// [FIX-ESP-17] 2026-05-31: 7.6.5 — enterDeepSleep() stabilizáció
+// (INT_WDT(5) reset ellen csak delay meghosszabbítással, interrupt cleanup nélkül).
 #define FIRMWARE_VERSION "7.6.5"
 #define FIRMWARE_DATE "2026-05-31"
 
@@ -1924,41 +1923,28 @@ void enterDeepSleep(const char* reason) {
     DBG("BLE stop");
     if (bleConnected) {
       pServer->disconnect(0);
-      delay(300);
+      delay(500);  // [FIX-ESP-17] meghosszabbítva: 200 -> 500ms
     }
     BLEDevice::stopAdvertising();
-    delay(200);
+    delay(300);    // [FIX-ESP-17] meghosszabbítva: 100 -> 300ms
     bleConnected = false;
     bleEnabled = false;
   }
 
   DBG("Relays OFF before sleep");
   disableRelays();
-  delay(100);
+  delay(200);      // [FIX-ESP-17] új: 200ms stabilization
 
   DBG("LEDs OFF");
   digitalWrite(LED_RED, LOW);
   digitalWrite(LED_YELLOW, LOW);
-  delay(100);
-
-  // [FIX-ESP-17] 2026-05-31: Interrupt cleanup és stabilizáció a deep sleep előtt.
-  // Az INT_WDT(5) reset azt jelezte, hogy az esp_deep_sleep_enable_gpio_wakeup()
-  // után az interrupt kezelő nem fejeződött be helyesen, vagy az ébredés során
-  // az ISR megakadt. Az interrupt-ek kikapcsolása és az ESP stabilizálása
-  // (500ms delay) előbb megelőzi az INT_WDT-t.
-  DBG("INT cleanup & stabilize before sleep");
-  portDISABLE_INTERRUPTS();
-  esp_intr_disable_source(ETS_GPIO_INUM);
-  portENABLE_INTERRUPTS();
-  delay(100);
+  delay(200);      // [FIX-ESP-17] új: 200ms stabilization
 
   DBG("Deep sleep on BTN");
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
 
   Serial.flush();
-  delay(500);  // Final stabilization before sleep
-
+  delay(500);      // [FIX-ESP-17] új: final 500ms stabilization
   esp_deep_sleep_start();
 }
 
