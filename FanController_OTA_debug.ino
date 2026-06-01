@@ -81,6 +81,7 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include <Preferences.h>  // [FIX-ESP-21] NVS fokozat-mentés áramtalanításra
 
 // ===================== DEBUG CONFIG =====================
 // [FIX-ESP-9] 2026-05-24: OTA_DEBUG kikapcsolva production módra.
@@ -142,7 +143,12 @@
 // automatikus bekapcsolása boot-ban (ne maradjon "halott" az eszköz).
 // [FIX-ESP-20] 2026-06-01: 7.6.6 — az összeomlás előtti ventilátor-fokozat is
 // visszaáll (RTC_NOINIT-be mentve, magic-cel védve a BROWNOUT-törlés ellen).
-#define FIRMWARE_VERSION "7.6.6"
+// [FIX-ESP-21] 2026-06-01: 7.6.7 — hibrid fokozat-mentés: RTC (resetre) + NVS
+// (teljes áramtalanításra). NVS-be csak akkor írunk, ha egy fokozat 30mp-ig
+// stabil maradt (nem a brownout-veszélyes váltási pillanatban, flash-kímélő).
+// Boot-helyreállítás prioritás: RTC → NVS fallback. NVS partíció már létezik,
+// nem kell partíció-átalakítás.
+#define FIRMWARE_VERSION "7.6.7"
 #define FIRMWARE_DATE "2026-06-01"
 
 // ===================== PINS =====================
@@ -323,6 +329,18 @@ RTC_NOINIT_ATTR uint32_t savedZoneMagic;
 RTC_NOINIT_ATTR int savedZone;
 #define SAVED_ZONE_MAGIC 0xFA11A5EE
 
+// [FIX-ESP-21] Hibrid: NVS-be is mentjük a fokozatot, hogy TELJES áramtalanítás
+// után is visszaálljon (az RTC csak resetet él túl, áramtalanítást nem). DE csak
+// akkor írunk NVS-be, ha egy fokozat HOSSZABB IDEIG (NVS_SAVE_STABLE_MS) stabil
+// maradt — így nem írunk a brownout-veszélyes váltási pillanatban, és ritka az
+// írás (flash-kímélő). Az NVS write atomi (kettős buffer), félbeszakadásnál a
+// régi érték marad.
+Preferences fanPrefs;
+int nvsLastSavedZone = -1;             // amit utoljára NVS-be írtunk (cache, hogy ne írjunk feleslegesen)
+unsigned long zoneStableSince = 0;     // mikortól stabil a jelenlegi fokozat
+bool nvsZonePending = false;           // van-e még nem mentett stabil fokozat
+const unsigned long NVS_SAVE_STABLE_MS = 30000;  // 30 mp stabilitás után mentünk
+
 // ===================== COMMAND SOURCE PRIORITY =====================
 enum CommandSource {
   SRC_NONE = 0,
@@ -363,6 +381,7 @@ void handleZoneChange();
 void handleBleCommand();
 void stateMachineStep();
 void normalMode();
+void saveZoneToNvsIfStable();  // [FIX-ESP-21]
 void failSafeMode();
 void ota_boot_flow();
 void otaInitService(BLEServer* server);
@@ -1461,6 +1480,12 @@ void setup() {
   // [FIX-ESP-20] 2026-06-01: az összeomlás előtti fokozat (RTC-ből, magic-cel
   // védve) is visszaáll, ha érvényes. Így a ventilátor ott folytatja, ahol az
   // áramkimaradás megszakította.
+  // [FIX-ESP-21] NVS-ben tárolt fokozat beolvasása (áramtalanítás-túlélés).
+  // Ez a cache-t (nvsLastSavedZone) is feltölti, így később nem írunk feleslegesen.
+  fanPrefs.begin("fan", true);  // read-only
+  nvsLastSavedZone = fanPrefs.getInt("zone", 0);
+  fanPrefs.end();
+
   if (lastBootResetReason == ESP_RST_BROWNOUT ||
       lastBootResetReason == ESP_RST_UNKNOWN) {
     DBG("Boot after BROWNOUT/UNKNOWN → activating roller");
@@ -1468,10 +1493,19 @@ void setup() {
     delay(100);
     activateRoller();
 
+    // Prioritás: RTC (legfrissebb, resetet él túl) → NVS (áramtalanítást is).
+    int restoreZone = 0;
     if (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 1 && savedZone <= 3) {
-      DBG_P("Restoring saved fan zone: ");
-      Serial.println(savedZone);
-      setFanZone(savedZone, SRC_BUTTON);
+      restoreZone = savedZone;
+      DBG_P("Restoring fan zone (RTC): ");
+    } else if (nvsLastSavedZone >= 1 && nvsLastSavedZone <= 3) {
+      restoreZone = nvsLastSavedZone;
+      DBG_P("Restoring fan zone (NVS): ");
+    }
+
+    if (restoreZone >= 1) {
+      Serial.println(restoreZone);
+      setFanZone(restoreZone, SRC_BUTTON);
     } else {
       DBG("No valid saved zone to restore");
     }
@@ -1494,6 +1528,10 @@ void loop() {
 
   // [FIX-ESP-14] Diag napló BLE-kiszolgálása (csak ha nem fut OTA)
   if (!otaIsRunning()) handleDiagRequest();
+
+  // [FIX-ESP-21] Stabil fokozat mentése NVS-be (áramtalanítás-túléléshez).
+  // OTA közben ne írjunk flash-t, nehogy zavarja az update-et.
+  if (!otaIsRunning()) saveZoneToNvsIfStable();
 }
 
 // ===================== STATE MACHINE =====================
@@ -1839,12 +1877,40 @@ void handleZoneChange() {
 
   portEXIT_CRITICAL(&zoneMux);
 
+  // [FIX-ESP-21] Új fokozat → indul a stabilitás-számláló. Ha ez a fokozat
+  // NVS_SAVE_STABLE_MS ideig megmarad, a saveZoneToNvsIfStable() lementi NVS-be.
+  zoneStableSince = nowhandleZoneChange;
+  nvsZonePending = true;
+
   switch (localPendingZone) {
     case 1: DBG("Fan1 ON (33%)"); break;
     case 2: DBG("Fan2 ON (66%)"); break;
     case 3: DBG("Fan3 ON (100%)"); break;
     case 0: DBG("All fans OFF"); break;
   }
+}
+
+// [FIX-ESP-21] NVS mentés CSAK ha a jelenlegi fokozat hosszabb ideig stabil.
+// A loop()-ból hívjuk. Így a brownout-veszélyes váltási pillanatban NEM írunk
+// flash-t, és ritka az írás (csak tartós beállításnál egyszer). Áramtalanítás
+// után innen áll vissza a fokozat (az RTC-t csak reset éli túl, áramtalanítást
+// nem). Csak akkor írunk, ha tényleg változott az NVS-ben tárolt értékhez képest.
+void saveZoneToNvsIfStable() {
+  if (!nvsZonePending) return;
+  if (millis() - zoneStableSince < NVS_SAVE_STABLE_MS) return;
+
+  nvsZonePending = false;  // egyszer próbáljuk, nem pörgünk rá
+
+  int z = currentZone;
+  if (z == nvsLastSavedZone) return;  // már ez van NVS-ben, ne írjunk feleslegesen
+
+  fanPrefs.begin("fan", false);
+  fanPrefs.putInt("zone", z);
+  fanPrefs.end();
+  nvsLastSavedZone = z;
+
+  DBG_P("NVS zone saved: ");
+  Serial.println(z);
 }
 
 // ===================== ROLLER CONTROL =====================
