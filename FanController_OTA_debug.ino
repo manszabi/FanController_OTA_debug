@@ -148,7 +148,9 @@
 // stabil maradt (nem a brownout-veszélyes váltási pillanatban, flash-kímélő).
 // Boot-helyreállítás prioritás: RTC → NVS fallback. NVS partíció már létezik,
 // nem kell partíció-átalakítás.
-#define FIRMWARE_VERSION "7.6.7"
+// [FIX-ESP-22] 2026-06-01: 7.6.8 — a WDT reseteket (INT_WDT/TASK_WDT/WDT) is
+// bevesszük a görgő + fokozat visszaállításba (eddig csak BROWNOUT/UNKNOWN).
+#define FIRMWARE_VERSION "7.6.8"
 #define FIRMWARE_DATE "2026-06-01"
 
 // ===================== PINS =====================
@@ -1473,10 +1475,10 @@ void setup() {
   DBG_P("Free heap: ");
   Serial.println(ESP.getFreeHeap());
 
-  // [FIX-ESP-19] 2026-06-01: BROWNOUT/UNKNOWN reset után görgő bekapcs.
+  // [FIX-ESP-19] 2026-06-01: BROWNOUT/UNKNOWN/WDT reset után görgő bekapcs.
   // Ha az eszköz BROWNOUT miatt resetelt (a 230V AC ventilátor terhelésétől),
-  // boot után azonnal bekapcsoljuk a görgőt + relékre, hogy az eszköz
-  // működőképes maradjon és ne legyen "halott" állapot.
+  // vagy WDT/UNKNOWN reset történt, boot után azonnal bekapcsoljuk a görgőt +
+  // relékre, hogy az eszköz működőképes maradjon és ne legyen "halott" állapot.
   // [FIX-ESP-20] 2026-06-01: az összeomlás előtti fokozat (RTC-ből, magic-cel
   // védve) is visszaáll, ha érvényes. Így a ventilátor ott folytatja, ahol az
   // áramkimaradás megszakította.
@@ -1486,9 +1488,16 @@ void setup() {
   nvsLastSavedZone = fanPrefs.getInt("zone", 0);
   fanPrefs.end();
 
+  // [FIX-ESP-22] 2026-06-01: a WDT reseteket is bevesszük a visszaállításba.
+  // Három WDT-fajta van az ESP-IDF-ben: INT_WDT (interrupt watchdog),
+  // TASK_WDT (task watchdog), WDT (általános). Ha bármelyik miatt resetel
+  // miközben járt a ventilátor, a görgő + fokozat is visszaáll.
   if (lastBootResetReason == ESP_RST_BROWNOUT ||
-      lastBootResetReason == ESP_RST_UNKNOWN) {
-    DBG("Boot after BROWNOUT/UNKNOWN → activating roller");
+      lastBootResetReason == ESP_RST_UNKNOWN ||
+      lastBootResetReason == ESP_RST_INT_WDT ||
+      lastBootResetReason == ESP_RST_TASK_WDT ||
+      lastBootResetReason == ESP_RST_WDT) {
+    DBG("Boot after BROWNOUT/UNKNOWN/WDT → activating roller");
     enableRelays();
     delay(100);
     activateRoller();
