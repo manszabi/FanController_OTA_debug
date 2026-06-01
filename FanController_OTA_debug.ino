@@ -132,8 +132,14 @@
 // hibát adunk a félrevezető "Decryption error" helyett (amit az arduino-esp32
 // Update könyvtár U_AES_DECRYPT_AUTO módja dob nem-0xE9 fejlécre). A hiba a
 // diag naplóba is bekerül ([ota] bad magic=0x..).
-#define FIRMWARE_VERSION "7.6.4"
-#define FIRMWARE_DATE "2026-05-31"
+// [FIX-ESP-18] 2026-06-01: 7.6.5 — RELAY_SWITCH_DELAY_MS 100 -> 10ms.
+// A fokozat-váltás break-before-make ideje csökkentve, hogy a teljes táp-
+// tranziens (régi fan ki + új fan be) rövid idő alatt lezajljon, és ne legyen
+// két külön mély feszültségrogyás. MEGJEGYZÉS: a tényleges break minimum ~20ms
+// a checkInterval (20ms) miatt, mert a handleZoneChange() csak annyi időnként
+// fut. A 230V AC ventilátor BROWNOUT csak hardveres snubber/MOV-val szűnik meg.
+#define FIRMWARE_VERSION "7.6.5"
+#define FIRMWARE_DATE "2026-06-01"
 
 // ===================== PINS =====================
 #define RELAY_FAN1 10
@@ -236,7 +242,7 @@ portMUX_TYPE bleCmdMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ===================== TIMERS =====================
 const unsigned long INACTIVITY_MS = 3600000;
-const unsigned long RELAY_SWITCH_DELAY_MS = 100;
+const unsigned long RELAY_SWITCH_DELAY_MS = 10;
 const unsigned long LED_BLINK_INTERVAL = 500;
 const unsigned long HEARTBEAT_INTERVAL = 2000;
 const unsigned long HEARTBEAT_PULSE = 100;
