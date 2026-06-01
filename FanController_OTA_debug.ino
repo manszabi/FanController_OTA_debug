@@ -138,7 +138,11 @@
 // két külön mély feszültségrogyás. MEGJEGYZÉS: a tényleges break minimum ~20ms
 // a checkInterval (20ms) miatt, mert a handleZoneChange() csak annyi időnként
 // fut. A 230V AC ventilátor BROWNOUT csak hardveres snubber/MOV-val szűnik meg.
-#define FIRMWARE_VERSION "7.6.5"
+// [FIX-ESP-19] 2026-06-01: 7.6.6 — BROWNOUT/UNKNOWN reset után görgő + relék
+// automatikus bekapcsolása boot-ban (ne maradjon "halott" az eszköz).
+// [FIX-ESP-20] 2026-06-01: 7.6.6 — az összeomlás előtti ventilátor-fokozat is
+// visszaáll (RTC_NOINIT-be mentve, magic-cel védve a BROWNOUT-törlés ellen).
+#define FIRMWARE_VERSION "7.6.6"
 #define FIRMWARE_DATE "2026-06-01"
 
 // ===================== PINS =====================
@@ -310,6 +314,14 @@ bool wasActive = false;
 // Boot magic
 RTC_NOINIT_ATTR uint32_t bootMagic;
 #define BOOT_MAGIC 0xDEADBEEF
+
+// [FIX-ESP-20] Az utolsó aktív ventilátor-fokozat mentése RTC memóriába, hogy
+// BROWNOUT/UNKNOWN reset után vissza lehessen állítani. Külön magic védi az
+// érvényességet, mert a BROWNOUT az RTC memóriát is törölheti — ilyenkor a
+// magic nem egyezik, és nem állítunk vissza szemét értéket.
+RTC_NOINIT_ATTR uint32_t savedZoneMagic;
+RTC_NOINIT_ATTR int savedZone;
+#define SAVED_ZONE_MAGIC 0xFA11A5EE
 
 // ===================== COMMAND SOURCE PRIORITY =====================
 enum CommandSource {
@@ -1446,12 +1458,23 @@ void setup() {
   // Ha az eszköz BROWNOUT miatt resetelt (a 230V AC ventilátor terhelésétől),
   // boot után azonnal bekapcsoljuk a görgőt + relékre, hogy az eszköz
   // működőképes maradjon és ne legyen "halott" állapot.
+  // [FIX-ESP-20] 2026-06-01: az összeomlás előtti fokozat (RTC-ből, magic-cel
+  // védve) is visszaáll, ha érvényes. Így a ventilátor ott folytatja, ahol az
+  // áramkimaradás megszakította.
   if (lastBootResetReason == ESP_RST_BROWNOUT ||
       lastBootResetReason == ESP_RST_UNKNOWN) {
     DBG("Boot after BROWNOUT/UNKNOWN → activating roller");
     enableRelays();
     delay(100);
     activateRoller();
+
+    if (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 1 && savedZone <= 3) {
+      DBG_P("Restoring saved fan zone: ");
+      Serial.println(savedZone);
+      setFanZone(savedZone, SRC_BUTTON);
+    } else {
+      DBG("No valid saved zone to restore");
+    }
   }
 
   digitalWrite(LED_YELLOW, LOW);
@@ -1798,6 +1821,11 @@ void handleZoneChange() {
   portENTER_CRITICAL(&zoneMux);
 
   currentZone = localPendingZone;
+
+  // [FIX-ESP-20] Aktuális fokozat mentése RTC-be (magic-cel védve), hogy egy
+  // esetleges BROWNOUT/UNKNOWN reset után visszaállítható legyen.
+  savedZone = localPendingZone;
+  savedZoneMagic = SAVED_ZONE_MAGIC;
 
   switch (localPendingZone) {
     case 1: digitalWrite(RELAY_FAN1, LOW); break;
