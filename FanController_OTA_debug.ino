@@ -283,6 +283,7 @@ int manualZoneIndex = 0;
 bool rollerActive = false;
 bool relaysEnabled = false;
 bool manualMode = false;
+esp_reset_reason_t lastBootResetReason = ESP_RST_UNKNOWN;  // [FIX-ESP-19] boot reset-ok mentése
 
 volatile unsigned long lastActivityTime = 0;
 unsigned long lastRedToggle = 0;
@@ -1319,6 +1320,7 @@ void setup() {
   // (BROWNOUT, PANIC, WDT, SW) esetén ÚJRAINDULUNK és folytatjuk a normál
   // működést (BLE advertising újraindul) — az eszköz nem marad "halott".
   esp_reset_reason_t resetReason = esp_reset_reason();
+  lastBootResetReason = resetReason;  // [FIX-ESP-19] globális mentés
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
   bootMagic = BOOT_MAGIC;
 
@@ -1439,6 +1441,18 @@ void setup() {
   Serial.println();
   DBG_P("Free heap: ");
   Serial.println(ESP.getFreeHeap());
+
+  // [FIX-ESP-19] 2026-06-01: BROWNOUT/UNKNOWN reset után görgő bekapcs.
+  // Ha az eszköz BROWNOUT miatt resetelt (a 230V AC ventilátor terhelésétől),
+  // boot után azonnal bekapcsoljuk a görgőt + relékre, hogy az eszköz
+  // működőképes maradjon és ne legyen "halott" állapot.
+  if (lastBootResetReason == ESP_RST_BROWNOUT ||
+      lastBootResetReason == ESP_RST_UNKNOWN) {
+    DBG("Boot after BROWNOUT/UNKNOWN → activating roller");
+    enableRelays();
+    delay(100);
+    activateRoller();
+  }
 
   digitalWrite(LED_YELLOW, LOW);
 }
