@@ -1514,7 +1514,8 @@ void setup() {
     // - RTC jó (0-3) → RTC érték
     // - RTC hibás, NVS jó (0-3) → NVS érték
     // - Mindkettő jó, de különbözik → magasabb zóna
-    // - Mindkettő 0 vagy hibás → LEVEL:0 (kikapcsol, de görgő jár)
+    // - Mindkettő érvényes és 0 → LEVEL:0 (kikapcsol, de görgő jár)
+    // - Mindkettő HIBÁS (érvénytelen adat) → fallback LEVEL:2
     bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
     bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
     int restoreZone = 0;
@@ -1542,9 +1543,9 @@ void setup() {
       DBG_P("Restoring fan zone (NVS valid 0-3): ");
       Serial.println(restoreZone);
     } else {
-      // Mindkettő hibás → LEVEL:0
-      restoreZone = 0;
-      DBG("Both RTC and NVS invalid → defaulting to zone 0");
+      // Mindkettő hibás → fallback LEVEL:2
+      restoreZone = 2;
+      DBG("Both RTC and NVS invalid → defaulting to zone 2");
     }
 
     setFanZone(restoreZone, SRC_BUTTON);
