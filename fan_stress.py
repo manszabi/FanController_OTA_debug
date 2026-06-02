@@ -231,7 +231,7 @@ async def main() -> int:
     ap = argparse.ArgumentParser(description="FanController stressz-teszt (fokozat-edzés) BLE-n")
     ap.add_argument("--pin", default="123456", help="BLE AUTH PIN (alapért: 123456)")
     ap.add_argument("--address", default=None, help="BLE MAC/UUID (ha nincs, név alapján keres)")
-    ap.add_argument("--levels", default="1,2,3", help="fokozatok sorrendje (alapért: 1,2,3; 0 = ki)")
+    ap.add_argument("--levels", default="0,1,2,3", help="fokozatok sorrendje (alapért: 0,1,2,3; 0 = ki)")
     ap.add_argument("--dwell", type=float, default=3.0, help="másodperc fokozatonként (alapért: 3)")
     ap.add_argument("--roller-toggle", action="store_true", help="ROLLER ki/be a ciklusok között (durvább stressz)")
     ap.add_argument("--off-dwell", type=float, default=1.0, help="OFF állapot hossza --roller-toggle esetén (alapért: 1)")
