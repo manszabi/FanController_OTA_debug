@@ -75,6 +75,7 @@
 #include <OneButton.h>
 #include "esp_sleep.h"
 #include "esp_task_wdt.h"
+#include "esp_intr_alloc.h"  // [FIX-ESP-24] interrupt cleanup deep sleep előtt
 #include <Update.h>
 #include "FS.h"
 #include "SPIFFS.h"
@@ -150,8 +151,17 @@
 // nem kell partíció-átalakítás.
 // [FIX-ESP-22] 2026-06-01: 7.6.8 — a WDT reseteket (INT_WDT/TASK_WDT/WDT) is
 // bevesszük a görgő + fokozat visszaállításba (eddig csak BROWNOUT/UNKNOWN).
-#define FIRMWARE_VERSION "7.6.8"
-#define FIRMWARE_DATE "2026-06-01"
+// [FIX-ESP-23] 2026-06-02: 7.6.9 — hosszabb türelmi szünetek az enterDeepSleep()
+// -ben, hogy az ESP rendszere stabilizálódjon az alvás előtt (INT_WDT ellen):
+// BLE disconnect után 200->500ms, BLE stop után 100->300ms, relé OFF után +200ms,
+// LED OFF után +200ms, és +500ms közvetlenül a deep sleep előtt.
+// [FIX-ESP-24] 2026-06-02: 7.7.0 — interrupt cleanup visszatéve a deep sleep
+// elé (INT_WDT(5) ellen): portDISABLE_INTERRUPTS + esp_intr_disable_source(
+// ETS_GPIO_INUM) + esp_sleep_disable_wakeup_source(ALL) a GPIO wakeup beállítása
+// előtt. A 7.6.5-ös leállást NEM ez okozta, ezért a hosszabb delay-ekkel együtt
+// visszakerül.
+#define FIRMWARE_VERSION "7.7.0"
+#define FIRMWARE_DATE "2026-06-02"
 
 // ===================== PINS =====================
 #define RELAY_FAN1 10
@@ -2044,24 +2054,38 @@ void enterDeepSleep(const char* reason) {
     DBG("BLE stop");
     if (bleConnected) {
       pServer->disconnect(0);
-      delay(200);
+      delay(500);   // [FIX-ESP-23] BLE stack teljes kimaradása
     }
     BLEDevice::stopAdvertising();
-    delay(100);
+    delay(300);     // [FIX-ESP-23] advertising shutdown
     bleConnected = false;
     bleEnabled = false;
   }
 
   DBG("Relays OFF before sleep");
   disableRelays();
+  delay(200);       // [FIX-ESP-23] GPIO settle time relé OFF után
 
   DBG("LEDs OFF");
   digitalWrite(LED_RED, LOW);
   digitalWrite(LED_YELLOW, LOW);
+  delay(200);       // [FIX-ESP-23] GPIO settle time LED OFF után
+
+  // [FIX-ESP-24] 2026-06-02: Interrupt cleanup és stabilizáció a deep sleep előtt.
+  // Az INT_WDT(5) reset azt jelezte, hogy az esp_deep_sleep_enable_gpio_wakeup()
+  // után az interrupt kezelő nem fejeződött be helyesen, vagy az ébredés során
+  // az ISR megakadt. Az interrupt-ek kikapcsolása előbb megelőzi az INT_WDT-t.
+  DBG("INT cleanup & stabilize before sleep");
+  portDISABLE_INTERRUPTS();
+  esp_intr_disable_source(ETS_GPIO_INUM);
+  portENABLE_INTERRUPTS();
+  delay(100);
 
   DBG("Deep sleep on BTN");
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);  // korábbi wakeup sourceok törlése
   esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
 
+  delay(500);       // [FIX-ESP-23] ESP stabilizáció a deep sleep előtt
   Serial.flush();
   esp_deep_sleep_start();
 }
