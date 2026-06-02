@@ -5,17 +5,29 @@ import serial
 import serial.tools.list_ports
 import sys
 import threading
+import time
 from datetime import datetime
 
 
 class SerialMonitor:
-    def __init__(self, port=None, baudrate=115200, timeout=1):
+    def __init__(self, port=None, baudrate=115200, timeout=1, auto_reconnect=True):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.ser = None
         self.running = False
         self.rx_thread = None
+        self.auto_reconnect = auto_reconnect
+        self.reconnect_delay = 1.0
+
+    def find_arduino_port(self):
+        """Automatically find Arduino port."""
+        ports = serial.tools.list_ports.comports()
+        for port in ports:
+            if 'Arduino' in port.description or 'CH340' in port.description or 'USB' in port.description:
+                if 'ttyACM' in port.device or 'ttyUSB' in port.device or 'COM' in port.device:
+                    return port.device
+        return None
 
     def list_ports(self):
         """List available serial ports."""
@@ -52,24 +64,46 @@ class SerialMonitor:
             return False
 
     def read_loop(self):
-        """Read from serial port continuously."""
+        """Read from serial port continuously with auto-reconnect."""
         while self.running:
             try:
-                if self.ser and self.ser.in_waiting:
-                    data = self.ser.read(self.ser.in_waiting)
-                    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                if self.ser and self.ser.is_open:
+                    if self.ser.in_waiting:
+                        data = self.ser.read(self.ser.in_waiting)
+                        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
-                    # Try to decode as text, fall back to hex
-                    try:
-                        text = data.decode('utf-8', errors='ignore')
-                        print(f"[{timestamp}] RX: {text.rstrip()}")
-                    except:
-                        hex_str = ' '.join(f'{b:02x}' for b in data)
-                        print(f"[{timestamp}] RX: {hex_str}")
+                        # Try to decode as text, fall back to hex
+                        try:
+                            text = data.decode('utf-8', errors='ignore')
+                            print(f"[{timestamp}] RX: {text.rstrip()}")
+                        except:
+                            hex_str = ' '.join(f'{b:02x}' for b in data)
+                            print(f"[{timestamp}] RX: {hex_str}")
+                    else:
+                        time.sleep(0.01)
+                else:
+                    # Connection lost, try to reconnect
+                    if self.auto_reconnect and self.running:
+                        print(f"\n⚠ Kapcsolat megszakadt. Újracsatlakozás {self.reconnect_delay}s múlva...")
+                        time.sleep(self.reconnect_delay)
+                        if self.connect():
+                            print("✓ Újracsatlakozva!")
+                    else:
+                        break
+            except serial.SerialException as e:
+                if self.running:
+                    if self.auto_reconnect:
+                        print(f"\n⚠ Soros hiba: {e}. Újracsatlakozás {self.reconnect_delay}s múlva...")
+                        time.sleep(self.reconnect_delay)
+                        if self.connect():
+                            print("✓ Újracsatlakozva!")
+                    else:
+                        print(f"Olvasási hiba: {e}")
+                        break
             except Exception as e:
                 if self.running:
-                    print(f"Olvasási hiba: {e}")
-                break
+                    print(f"Hiba: {e}")
+                time.sleep(0.1)
 
     def send(self, data):
         """Send data to serial port."""
@@ -146,11 +180,40 @@ class SerialMonitor:
 
 def main():
     """Main function."""
-    print("=== Soros Port Monitor ===")
+    print("=== Soros Port Monitor (Auto-reconnect) ===")
 
-    monitor = SerialMonitor()
+    monitor = SerialMonitor(auto_reconnect=True)
 
-    # List and select port
+    # Try to auto-detect Arduino port
+    arduino_port = monitor.find_arduino_port()
+    if arduino_port:
+        print(f"\n✓ Arduino detektálva: {arduino_port}")
+        monitor.port = arduino_port
+        use_auto = input("Ezt a portot szeretnéd használni? (I/n): ").strip().lower()
+        if use_auto != 'n':
+            # Optional: select baudrate
+            baudrate_str = input("Baud rate (alapértelmezett: 115200): ").strip()
+            if baudrate_str:
+                try:
+                    monitor.baudrate = int(baudrate_str)
+                except ValueError:
+                    print("Alapértelmezett érték használva: 115200")
+
+            # Connect
+            if not monitor.connect():
+                return
+
+            # Interactive mode
+            try:
+                monitor.interactive_mode()
+            except KeyboardInterrupt:
+                print("\nMegszakítva.")
+            finally:
+                monitor.close()
+            return
+
+    # Manual port selection
+    print("\nArduino nem található. Kézi kiválasztás:")
     ports = monitor.list_ports()
     if not ports:
         return
