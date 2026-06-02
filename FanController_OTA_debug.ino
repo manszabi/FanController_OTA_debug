@@ -158,7 +158,10 @@
 // RTC jó → RTC; RTC hibás+NVS jó → NVS; mindkettő jó, de különbözik → magasabb zóna;
 // mindkettő hibás → fallback LEVEL:2. Így az UNKNOWN/BROWNOUT/WDT resetkor sosem
 // marad halott állapotban.
-#define FIRMWARE_VERSION "7.7.0"
+// [FIX-ESP-26] 2026-06-02: 7.7.1 — a boot NVS olvasás default értéke -1 (nem 0!),
+// hogy a "nincs NVS mentés" eset megkülönböztethető legyen a "mentett 0" esettől.
+// Enélkül az NVS mindig "érvényes 0"-nak látszott, és a fallback LEVEL:2 sosem futott.
+#define FIRMWARE_VERSION "7.7.1"
 #define FIRMWARE_DATE "2026-06-02"
 
 // ===================== PINS =====================
@@ -1492,8 +1495,11 @@ void setup() {
   // áramkimaradás megszakította.
   // [FIX-ESP-21] NVS-ben tárolt fokozat beolvasása (áramtalanítás-túlélés).
   // Ez a cache-t (nvsLastSavedZone) is feltölti, így később nem írunk feleslegesen.
+  // [FIX-ESP-26] Default -1 (NEM 0!), hogy a "nincs NVS mentés" eset
+  // megkülönböztethető legyen a "mentett 0" esettől. Így ha sosem mentett
+  // az eszköz, az NVS érvénytelennek számít, és működik a fallback LEVEL:2.
   fanPrefs.begin("fan", true);  // read-only
-  nvsLastSavedZone = fanPrefs.getInt("zone", 0);
+  nvsLastSavedZone = fanPrefs.getInt("zone", -1);
   fanPrefs.end();
 
   // [FIX-ESP-22] 2026-06-01: a WDT reseteket is bevesszük a visszaállításba.
