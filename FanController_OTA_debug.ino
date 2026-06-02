@@ -154,7 +154,11 @@
 // -ben, hogy az ESP rendszere stabilizálódjon az alvás előtt (INT_WDT ellen):
 // BLE disconnect után 200->500ms, BLE stop után 100->300ms, relé OFF után +200ms,
 // LED OFF után +200ms, és +500ms közvetlenül a deep sleep előtt.
-#define FIRMWARE_VERSION "7.6.9"
+// [FIX-ESP-25] 2026-06-02: 7.7.0 — intelligens zóna-helyreállítás hibás reset után:
+// RTC jó → RTC; RTC hibás+NVS jó → NVS; mindkettő jó, de különbözik → magasabb zóna;
+// mindkettő hibás → fallback LEVEL:2. Így az UNKNOWN/BROWNOUT/WDT resetkor sosem
+// marad halott állapotban.
+#define FIRMWARE_VERSION "7.7.0"
 #define FIRMWARE_DATE "2026-06-02"
 
 // ===================== PINS =====================
@@ -1506,22 +1510,37 @@ void setup() {
     delay(100);
     activateRoller();
 
-    // Prioritás: RTC (legfrissebb, resetet él túl) → NVS (áramtalanítást is).
+    // [FIX-ESP-25] Intelligens zóna-visszaállítás:
+    // - RTC jó → RTC érték
+    // - RTC hibás, NVS jó → NVS érték
+    // - Mindkettő jó, de különbözik → magasabb zóna
+    // - Mindkettő hibás → default LEVEL:2 (fallback)
+    bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 1 && savedZone <= 3);
+    bool nvsValid = (nvsLastSavedZone >= 1 && nvsLastSavedZone <= 3);
     int restoreZone = 0;
-    if (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 1 && savedZone <= 3) {
+
+    if (rtcValid && nvsValid) {
+      // Mindkettő érvényes → magasabb zóna
+      restoreZone = (savedZone > nvsLastSavedZone) ? savedZone : nvsLastSavedZone;
+      DBG_P("Restoring fan zone (both valid, selecting higher): ");
+      Serial.println(restoreZone);
+    } else if (rtcValid) {
+      // RTC jó
       restoreZone = savedZone;
       DBG_P("Restoring fan zone (RTC): ");
-    } else if (nvsLastSavedZone >= 1 && nvsLastSavedZone <= 3) {
+      Serial.println(restoreZone);
+    } else if (nvsValid) {
+      // NVS jó
       restoreZone = nvsLastSavedZone;
       DBG_P("Restoring fan zone (NVS): ");
+      Serial.println(restoreZone);
+    } else {
+      // Mindkettő hibás → fallback LEVEL:2
+      restoreZone = 2;
+      DBG("Both RTC and NVS invalid → defaulting to zone 2");
     }
 
-    if (restoreZone >= 1) {
-      Serial.println(restoreZone);
-      setFanZone(restoreZone, SRC_BUTTON);
-    } else {
-      DBG("No valid saved zone to restore");
-    }
+    setFanZone(restoreZone, SRC_BUTTON);
   }
 
   digitalWrite(LED_YELLOW, LOW);
