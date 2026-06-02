@@ -161,7 +161,11 @@
 // [FIX-ESP-26] 2026-06-02: 7.7.1 — a boot NVS olvasás default értéke -1 (nem 0!),
 // hogy a "nincs NVS mentés" eset megkülönböztethető legyen a "mentett 0" esettől.
 // Enélkül az NVS mindig "érvényes 0"-nak látszott, és a fallback LEVEL:2 sosem futott.
-#define FIRMWARE_VERSION "7.7.1"
+// [FIX-ESP-27] 2026-06-02: 7.7.2 — NVS force-mentés: sűrű váltogatásnál (ahol
+// sosincs 30s nyugalom) is mentsünk legalább 5 percenként, ha az aktuális fokozat
+// eltér az NVS-ben tárolttól. Így a stressz/edzés alatti utolsó fokozat is megőrződik
+// teljes áramtalanításra, de flash-kímélő módon (max 5 percenként egy írás).
+#define FIRMWARE_VERSION "7.7.2"
 #define FIRMWARE_DATE "2026-06-02"
 
 // ===================== PINS =====================
@@ -353,6 +357,10 @@ int nvsLastSavedZone = -1;             // amit utoljára NVS-be írtunk (cache, 
 unsigned long zoneStableSince = 0;     // mikortól stabil a jelenlegi fokozat
 bool nvsZonePending = false;           // van-e még nem mentett stabil fokozat
 const unsigned long NVS_SAVE_STABLE_MS = 30000;  // 30 mp stabilitás után mentünk
+// [FIX-ESP-27] Force-mentés: sűrű váltogatásnál (ahol sosincs 30s nyugalom) is
+// mentsünk legalább 5 percenként, ha az aktuális fokozat eltér az NVS-ben tárolttól.
+unsigned long lastNvsSaveTime = 0;     // mikor írtunk utoljára NVS-be
+const unsigned long NVS_FORCE_SAVE_MS = 300000;  // 5 perc → kényszerített mentés
 
 // ===================== COMMAND SOURCE PRIORITY =====================
 enum CommandSource {
@@ -1941,22 +1949,33 @@ void handleZoneChange() {
 // flash-t, és ritka az írás (csak tartós beállításnál egyszer). Áramtalanítás
 // után innen áll vissza a fokozat (az RTC-t csak reset éli túl, áramtalanítást
 // nem). Csak akkor írunk, ha tényleg változott az NVS-ben tárolt értékhez képest.
+// [FIX-ESP-27] Két ok a mentésre:
+//   1) STABIL: a fokozat 30s-ig nem változott (nvsZonePending) — normál eset.
+//   2) FORCE: 5 perce nem mentettünk, és az aktuális fokozat eltér az NVS-től.
+//      Így sűrű váltogatásnál (ahol sosincs 30s nyugalom) is megőrződik a
+//      fokozat teljes áramtalanításra — de legfeljebb 5 percenként (flash-kímélő).
 void saveZoneToNvsIfStable() {
-  if (!nvsZonePending) return;
-  if (millis() - zoneStableSince < NVS_SAVE_STABLE_MS) return;
-
-  nvsZonePending = false;  // egyszer próbáljuk, nem pörgünk rá
-
+  unsigned long now = millis();
   int z = currentZone;
+
+  bool stableSave = nvsZonePending && (now - zoneStableSince >= NVS_SAVE_STABLE_MS);
+  bool forceSave  = (now - lastNvsSaveTime >= NVS_FORCE_SAVE_MS) && (z != nvsLastSavedZone);
+
+  if (!stableSave && !forceSave) return;
+
+  if (stableSave) nvsZonePending = false;  // a stabil-pending elintézve, nem pörgünk rá
+
   if (z == nvsLastSavedZone) return;  // már ez van NVS-ben, ne írjunk feleslegesen
 
   fanPrefs.begin("fan", false);
   fanPrefs.putInt("zone", z);
   fanPrefs.end();
   nvsLastSavedZone = z;
+  lastNvsSaveTime = now;
 
   DBG_P("NVS zone saved: ");
-  Serial.println(z);
+  Serial.print(z);
+  Serial.println((forceSave && !stableSave) ? " (force 5min)" : " (stable 30s)");
 }
 
 // ===================== ROLLER CONTROL =====================
