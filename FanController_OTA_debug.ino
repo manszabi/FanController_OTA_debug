@@ -90,6 +90,9 @@
 // DEBUG=1 marad általános üzenetekhez, OTA_DEBUG=0 csak a per-csomag spam-et tiltja.
 #define DEBUG 1
 #define OTA_DEBUG 0
+// [FIX-ESP-28] Boot-diagnosztika kiírása (RTC + NVS + diag.log) a soros monitorra.
+// Ha a program stabil, állítsd 0-ra a kikapcsoláshoz.
+#define BOOT_DIAG 1
 
 #if DEBUG
 #define DBG(x) Serial.println(F(x))
@@ -165,7 +168,10 @@
 // sosincs 30s nyugalom) is mentsünk legalább 5 percenként, ha az aktuális fokozat
 // eltér az NVS-ben tárolttól. Így a stressz/edzés alatti utolsó fokozat is megőrződik
 // teljes áramtalanításra, de flash-kímélő módon (max 5 percenként egy írás).
-#define FIRMWARE_VERSION "7.7.2"
+// [FIX-ESP-28] 2026-06-02: 7.7.3 — boot-diagnosztika a soros monitorra (RTC magic
+// + savedZone, NVS zone, diag.log tartalma), egy jól olvasható blokkban. BOOT_DIAG
+// kapcsolóval kikapcsolható (0), ha a program stabil — ekkor nem fordul bele kód.
+#define FIRMWARE_VERSION "7.7.3"
 #define FIRMWARE_DATE "2026-06-02"
 
 // ===================== PINS =====================
@@ -409,6 +415,7 @@ void otaInitService(BLEServer* server);
 void otaLoop();
 void diagLog(const char* line);
 void handleDiagRequest();
+void printBootDiag();  // [FIX-ESP-28]
 bool otaIsRunning() {
   return (otaMode != OTA_NORMAL_MODE);
 }
@@ -1245,6 +1252,58 @@ void diagLog(const char* line) {
   }
 }
 
+// [FIX-ESP-28] 2026-06-02: Boot-diagnosztika a soros monitorra: az RTC_NOINIT,
+// az NVS és a diag.log állapota egyetlen, jól olvasható blokkban. Csak fejlesztéskor
+// kell — BOOT_DIAG=0 esetén a függvény üres (nem fordul bele kód). A boot folyamat
+// végén hívjuk, amikor az nvsLastSavedZone már betöltve és a friss [boot] sor benne.
+void printBootDiag() {
+#if BOOT_DIAG
+  bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
+  bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
+
+  Serial.println();
+  Serial.println(F("===================================="));
+  Serial.println(F("BOOT DIAG (RTC / NVS / diag.log)"));
+  Serial.println(F("===================================="));
+
+  // --- RTC_NOINIT ---
+  Serial.print(F("RTC magic: 0x"));
+  Serial.print(savedZoneMagic, HEX);
+  Serial.print(F(" ("));
+  Serial.print(rtcValid ? F("valid") : F("invalid"));
+  Serial.println(F(")"));
+  Serial.print(F("RTC savedZone: "));
+  Serial.println(savedZone);
+
+  // --- NVS ---
+  Serial.print(F("NVS zone: "));
+  Serial.print(nvsLastSavedZone);
+  Serial.print(F(" ("));
+  Serial.print(nvsValid ? F("valid") : F("none/invalid"));
+  Serial.println(F(")"));
+
+  // --- diag.log ---
+  Serial.println(F("--- diag.log ---"));
+  if (FLASH.exists(DIAG_LOG_PATH)) {
+    File df = FLASH.open(DIAG_LOG_PATH, FILE_READ);
+    if (df) {
+      if (df.size() == 0) {
+        Serial.println(F("(ures)"));
+      } else {
+        while (df.available()) Serial.write(df.read());
+        Serial.println();
+      }
+      df.close();
+    } else {
+      Serial.println(F("(nem olvashato)"));
+    }
+  } else {
+    Serial.println(F("(nincs diag.log)"));
+  }
+  Serial.println(F("===================================="));
+#endif
+}
+
 // [FIX-ESP-14] 2026-05-30: A DIAG? / DIAGCLR parancsok nemblokkoló kiszolgálása.
 // A BLE onWrite callback CSAK flag-et állít (diagRequested/diagClearRequested),
 // a tényleges SPIFFS olvasás és a darabolt notify itt, a fő loopban történik –
@@ -1564,6 +1623,9 @@ void setup() {
 
     setFanZone(restoreZone, SRC_BUTTON);
   }
+
+  // [FIX-ESP-28] Boot-diagnosztika kiírása (RTC + NVS + diag.log). BOOT_DIAG=0 → üres.
+  printBootDiag();
 
   digitalWrite(LED_YELLOW, LOW);
 }
