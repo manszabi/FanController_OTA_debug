@@ -1511,33 +1511,40 @@ void setup() {
     activateRoller();
 
     // [FIX-ESP-25] Intelligens zóna-visszaállítás:
-    // - RTC jó → RTC érték
-    // - RTC hibás, NVS jó → NVS érték
+    // - RTC jó (0-3) → RTC érték
+    // - RTC hibás, NVS jó (0-3) → NVS érték
     // - Mindkettő jó, de különbözik → magasabb zóna
-    // - Mindkettő hibás → default LEVEL:2 (fallback)
-    bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 1 && savedZone <= 3);
-    bool nvsValid = (nvsLastSavedZone >= 1 && nvsLastSavedZone <= 3);
+    // - Mindkettő 0 vagy hibás → LEVEL:0 (kikapcsol, de görgő jár)
+    bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
+    bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
     int restoreZone = 0;
 
     if (rtcValid && nvsValid) {
-      // Mindkettő érvényes → magasabb zóna
-      restoreZone = (savedZone > nvsLastSavedZone) ? savedZone : nvsLastSavedZone;
-      DBG_P("Restoring fan zone (both valid, selecting higher): ");
-      Serial.println(restoreZone);
+      // Mindkettő érvényes (0-3)
+      if (savedZone == 0 && nvsLastSavedZone == 0) {
+        // Mindkettő 0 → LEVEL:0
+        restoreZone = 0;
+        DBG("Both RTC and NVS are 0 → setting zone to 0");
+      } else {
+        // Mindkettő jó, de legalább egy nem 0 → magasabb zóna
+        restoreZone = (savedZone > nvsLastSavedZone) ? savedZone : nvsLastSavedZone;
+        DBG_P("Restoring fan zone (both valid 0-3, selecting higher): ");
+        Serial.println(restoreZone);
+      }
     } else if (rtcValid) {
-      // RTC jó
+      // RTC jó (0-3)
       restoreZone = savedZone;
-      DBG_P("Restoring fan zone (RTC): ");
+      DBG_P("Restoring fan zone (RTC valid 0-3): ");
       Serial.println(restoreZone);
     } else if (nvsValid) {
-      // NVS jó
+      // NVS jó (0-3)
       restoreZone = nvsLastSavedZone;
-      DBG_P("Restoring fan zone (NVS): ");
+      DBG_P("Restoring fan zone (NVS valid 0-3): ");
       Serial.println(restoreZone);
     } else {
-      // Mindkettő hibás → fallback LEVEL:2
-      restoreZone = 2;
-      DBG("Both RTC and NVS invalid → defaulting to zone 2");
+      // Mindkettő hibás → LEVEL:0
+      restoreZone = 0;
+      DBG("Both RTC and NVS invalid → defaulting to zone 0");
     }
 
     setFanZone(restoreZone, SRC_BUTTON);
