@@ -75,7 +75,6 @@
 #include <OneButton.h>
 #include "esp_sleep.h"
 #include "esp_task_wdt.h"
-#include "esp_intr_alloc.h"  // [FIX-ESP-24] interrupt cleanup deep sleep előtt
 #include <Update.h>
 #include "FS.h"
 #include "SPIFFS.h"
@@ -91,6 +90,9 @@
 // DEBUG=1 marad általános üzenetekhez, OTA_DEBUG=0 csak a per-csomag spam-et tiltja.
 #define DEBUG 1
 #define OTA_DEBUG 0
+// [FIX-ESP-28] Boot-diagnosztika kiírása (RTC + NVS + diag.log) a soros monitorra.
+// Ha a program stabil, állítsd 0-ra a kikapcsoláshoz.
+#define BOOT_DIAG 1
 
 #if DEBUG
 #define DBG(x) Serial.println(F(x))
@@ -155,12 +157,21 @@
 // -ben, hogy az ESP rendszere stabilizálódjon az alvás előtt (INT_WDT ellen):
 // BLE disconnect után 200->500ms, BLE stop után 100->300ms, relé OFF után +200ms,
 // LED OFF után +200ms, és +500ms közvetlenül a deep sleep előtt.
-// [FIX-ESP-24] 2026-06-02: 7.7.0 — interrupt cleanup visszatéve a deep sleep
-// elé (INT_WDT(5) ellen): portDISABLE_INTERRUPTS + esp_intr_disable_source(
-// ETS_GPIO_INUM) + esp_sleep_disable_wakeup_source(ALL) a GPIO wakeup beállítása
-// előtt. A 7.6.5-ös leállást NEM ez okozta, ezért a hosszabb delay-ekkel együtt
-// visszakerül.
-#define FIRMWARE_VERSION "7.7.0"
+// [FIX-ESP-25] 2026-06-02: 7.7.0 — intelligens zóna-helyreállítás hibás reset után:
+// RTC jó → RTC; RTC hibás+NVS jó → NVS; mindkettő jó, de különbözik → magasabb zóna;
+// mindkettő hibás → fallback LEVEL:2. Így az UNKNOWN/BROWNOUT/WDT resetkor sosem
+// marad halott állapotban.
+// [FIX-ESP-26] 2026-06-02: 7.7.1 — a boot NVS olvasás default értéke -1 (nem 0!),
+// hogy a "nincs NVS mentés" eset megkülönböztethető legyen a "mentett 0" esettől.
+// Enélkül az NVS mindig "érvényes 0"-nak látszott, és a fallback LEVEL:2 sosem futott.
+// [FIX-ESP-27] 2026-06-02: 7.7.2 — NVS force-mentés: sűrű váltogatásnál (ahol
+// sosincs 30s nyugalom) is mentsünk legalább 5 percenként, ha az aktuális fokozat
+// eltér az NVS-ben tárolttól. Így a stressz/edzés alatti utolsó fokozat is megőrződik
+// teljes áramtalanításra, de flash-kímélő módon (max 5 percenként egy írás).
+// [FIX-ESP-28] 2026-06-02: 7.7.3 — boot-diagnosztika a soros monitorra (RTC magic
+// + savedZone, NVS zone, diag.log tartalma), egy jól olvasható blokkban. BOOT_DIAG
+// kapcsolóval kikapcsolható (0), ha a program stabil — ekkor nem fordul bele kód.
+#define FIRMWARE_VERSION "7.7.3"
 #define FIRMWARE_DATE "2026-06-02"
 
 // ===================== PINS =====================
@@ -352,6 +363,10 @@ int nvsLastSavedZone = -1;             // amit utoljára NVS-be írtunk (cache, 
 unsigned long zoneStableSince = 0;     // mikortól stabil a jelenlegi fokozat
 bool nvsZonePending = false;           // van-e még nem mentett stabil fokozat
 const unsigned long NVS_SAVE_STABLE_MS = 30000;  // 30 mp stabilitás után mentünk
+// [FIX-ESP-27] Force-mentés: sűrű váltogatásnál (ahol sosincs 30s nyugalom) is
+// mentsünk legalább 5 percenként, ha az aktuális fokozat eltér az NVS-ben tárolttól.
+unsigned long lastNvsSaveTime = 0;     // mikor írtunk utoljára NVS-be
+const unsigned long NVS_FORCE_SAVE_MS = 300000;  // 5 perc → kényszerített mentés
 
 // ===================== COMMAND SOURCE PRIORITY =====================
 enum CommandSource {
@@ -400,6 +415,7 @@ void otaInitService(BLEServer* server);
 void otaLoop();
 void diagLog(const char* line);
 void handleDiagRequest();
+void printBootDiag();  // [FIX-ESP-28]
 bool otaIsRunning() {
   return (otaMode != OTA_NORMAL_MODE);
 }
@@ -1236,6 +1252,58 @@ void diagLog(const char* line) {
   }
 }
 
+// [FIX-ESP-28] 2026-06-02: Boot-diagnosztika a soros monitorra: az RTC_NOINIT,
+// az NVS és a diag.log állapota egyetlen, jól olvasható blokkban. Csak fejlesztéskor
+// kell — BOOT_DIAG=0 esetén a függvény üres (nem fordul bele kód). A boot folyamat
+// végén hívjuk, amikor az nvsLastSavedZone már betöltve és a friss [boot] sor benne.
+void printBootDiag() {
+#if BOOT_DIAG
+  bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
+  bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
+
+  Serial.println();
+  Serial.println(F("===================================="));
+  Serial.println(F("BOOT DIAG (RTC / NVS / diag.log)"));
+  Serial.println(F("===================================="));
+
+  // --- RTC_NOINIT ---
+  Serial.print(F("RTC magic: 0x"));
+  Serial.print(savedZoneMagic, HEX);
+  Serial.print(F(" ("));
+  Serial.print(rtcValid ? F("valid") : F("invalid"));
+  Serial.println(F(")"));
+  Serial.print(F("RTC savedZone: "));
+  Serial.println(savedZone);
+
+  // --- NVS ---
+  Serial.print(F("NVS zone: "));
+  Serial.print(nvsLastSavedZone);
+  Serial.print(F(" ("));
+  Serial.print(nvsValid ? F("valid") : F("none/invalid"));
+  Serial.println(F(")"));
+
+  // --- diag.log ---
+  Serial.println(F("--- diag.log ---"));
+  if (FLASH.exists(DIAG_LOG_PATH)) {
+    File df = FLASH.open(DIAG_LOG_PATH, FILE_READ);
+    if (df) {
+      if (df.size() == 0) {
+        Serial.println(F("(ures)"));
+      } else {
+        while (df.available()) Serial.write(df.read());
+        Serial.println();
+      }
+      df.close();
+    } else {
+      Serial.println(F("(nem olvashato)"));
+    }
+  } else {
+    Serial.println(F("(nincs diag.log)"));
+  }
+  Serial.println(F("===================================="));
+#endif
+}
+
 // [FIX-ESP-14] 2026-05-30: A DIAG? / DIAGCLR parancsok nemblokkoló kiszolgálása.
 // A BLE onWrite callback CSAK flag-et állít (diagRequested/diagClearRequested),
 // a tényleges SPIFFS olvasás és a darabolt notify itt, a fő loopban történik –
@@ -1494,8 +1562,11 @@ void setup() {
   // áramkimaradás megszakította.
   // [FIX-ESP-21] NVS-ben tárolt fokozat beolvasása (áramtalanítás-túlélés).
   // Ez a cache-t (nvsLastSavedZone) is feltölti, így később nem írunk feleslegesen.
+  // [FIX-ESP-26] Default -1 (NEM 0!), hogy a "nincs NVS mentés" eset
+  // megkülönböztethető legyen a "mentett 0" esettől. Így ha sosem mentett
+  // az eszköz, az NVS érvénytelennek számít, és működik a fallback LEVEL:2.
   fanPrefs.begin("fan", true);  // read-only
-  nvsLastSavedZone = fanPrefs.getInt("zone", 0);
+  nvsLastSavedZone = fanPrefs.getInt("zone", -1);
   fanPrefs.end();
 
   // [FIX-ESP-22] 2026-06-01: a WDT reseteket is bevesszük a visszaállításba.
@@ -1512,23 +1583,49 @@ void setup() {
     delay(100);
     activateRoller();
 
-    // Prioritás: RTC (legfrissebb, resetet él túl) → NVS (áramtalanítást is).
+    // [FIX-ESP-25] Intelligens zóna-visszaállítás:
+    // - RTC jó (0-3) → RTC érték
+    // - RTC hibás, NVS jó (0-3) → NVS érték
+    // - Mindkettő jó, de különbözik → magasabb zóna
+    // - Mindkettő érvényes és 0 → LEVEL:0 (kikapcsol, de görgő jár)
+    // - Mindkettő HIBÁS (érvénytelen adat) → fallback LEVEL:2
+    bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
+    bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
     int restoreZone = 0;
-    if (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 1 && savedZone <= 3) {
+
+    if (rtcValid && nvsValid) {
+      // Mindkettő érvényes (0-3)
+      if (savedZone == 0 && nvsLastSavedZone == 0) {
+        // Mindkettő 0 → LEVEL:0
+        restoreZone = 0;
+        DBG("Both RTC and NVS are 0 → setting zone to 0");
+      } else {
+        // Mindkettő jó, de legalább egy nem 0 → magasabb zóna
+        restoreZone = (savedZone > nvsLastSavedZone) ? savedZone : nvsLastSavedZone;
+        DBG_P("Restoring fan zone (both valid 0-3, selecting higher): ");
+        Serial.println(restoreZone);
+      }
+    } else if (rtcValid) {
+      // RTC jó (0-3)
       restoreZone = savedZone;
-      DBG_P("Restoring fan zone (RTC): ");
-    } else if (nvsLastSavedZone >= 1 && nvsLastSavedZone <= 3) {
+      DBG_P("Restoring fan zone (RTC valid 0-3): ");
+      Serial.println(restoreZone);
+    } else if (nvsValid) {
+      // NVS jó (0-3)
       restoreZone = nvsLastSavedZone;
-      DBG_P("Restoring fan zone (NVS): ");
+      DBG_P("Restoring fan zone (NVS valid 0-3): ");
+      Serial.println(restoreZone);
+    } else {
+      // Mindkettő hibás → fallback LEVEL:2
+      restoreZone = 2;
+      DBG("Both RTC and NVS invalid → defaulting to zone 2");
     }
 
-    if (restoreZone >= 1) {
-      Serial.println(restoreZone);
-      setFanZone(restoreZone, SRC_BUTTON);
-    } else {
-      DBG("No valid saved zone to restore");
-    }
+    setFanZone(restoreZone, SRC_BUTTON);
   }
+
+  // [FIX-ESP-28] Boot-diagnosztika kiírása (RTC + NVS + diag.log). BOOT_DIAG=0 → üres.
+  printBootDiag();
 
   digitalWrite(LED_YELLOW, LOW);
 }
@@ -1914,22 +2011,33 @@ void handleZoneChange() {
 // flash-t, és ritka az írás (csak tartós beállításnál egyszer). Áramtalanítás
 // után innen áll vissza a fokozat (az RTC-t csak reset éli túl, áramtalanítást
 // nem). Csak akkor írunk, ha tényleg változott az NVS-ben tárolt értékhez képest.
+// [FIX-ESP-27] Két ok a mentésre:
+//   1) STABIL: a fokozat 30s-ig nem változott (nvsZonePending) — normál eset.
+//   2) FORCE: 5 perce nem mentettünk, és az aktuális fokozat eltér az NVS-től.
+//      Így sűrű váltogatásnál (ahol sosincs 30s nyugalom) is megőrződik a
+//      fokozat teljes áramtalanításra — de legfeljebb 5 percenként (flash-kímélő).
 void saveZoneToNvsIfStable() {
-  if (!nvsZonePending) return;
-  if (millis() - zoneStableSince < NVS_SAVE_STABLE_MS) return;
-
-  nvsZonePending = false;  // egyszer próbáljuk, nem pörgünk rá
-
+  unsigned long now = millis();
   int z = currentZone;
+
+  bool stableSave = nvsZonePending && (now - zoneStableSince >= NVS_SAVE_STABLE_MS);
+  bool forceSave  = (now - lastNvsSaveTime >= NVS_FORCE_SAVE_MS) && (z != nvsLastSavedZone);
+
+  if (!stableSave && !forceSave) return;
+
+  if (stableSave) nvsZonePending = false;  // a stabil-pending elintézve, nem pörgünk rá
+
   if (z == nvsLastSavedZone) return;  // már ez van NVS-ben, ne írjunk feleslegesen
 
   fanPrefs.begin("fan", false);
   fanPrefs.putInt("zone", z);
   fanPrefs.end();
   nvsLastSavedZone = z;
+  lastNvsSaveTime = now;
 
   DBG_P("NVS zone saved: ");
-  Serial.println(z);
+  Serial.print(z);
+  Serial.println((forceSave && !stableSave) ? " (force 5min)" : " (stable 30s)");
 }
 
 // ===================== ROLLER CONTROL =====================
@@ -2070,16 +2178,6 @@ void enterDeepSleep(const char* reason) {
   digitalWrite(LED_RED, LOW);
   digitalWrite(LED_YELLOW, LOW);
   delay(200);       // [FIX-ESP-23] GPIO settle time LED OFF után
-
-  // [FIX-ESP-24] 2026-06-02: Interrupt cleanup és stabilizáció a deep sleep előtt.
-  // Az INT_WDT(5) reset azt jelezte, hogy az esp_deep_sleep_enable_gpio_wakeup()
-  // után az interrupt kezelő nem fejeződött be helyesen, vagy az ébredés során
-  // az ISR megakadt. Az interrupt-ek kikapcsolása előbb megelőzi az INT_WDT-t.
-  DBG("INT cleanup & stabilize before sleep");
-  portDISABLE_INTERRUPTS();
-  esp_intr_disable_source(ETS_GPIO_INUM);
-  portENABLE_INTERRUPTS();
-  delay(100);
 
   DBG("Deep sleep on BTN");
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);  // korábbi wakeup sourceok törlése
