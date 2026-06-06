@@ -97,7 +97,7 @@
 // (mintavétel + STUCK failsafe + NOAC figyelmeztetés), 0 = teljesen kikapcsolva
 // (a kód NEM fordul bele, a GPIO6/7/20 lábak szabadon maradnak). A bekötés
 // részletei és a finomhangoló kapcsolók a PINS szekció után találhatók.
-#define FAN_SENSE_ENABLE 1
+#define FAN_SENSE_ENABLE 0
 
 #if DEBUG
 #define DBG(x) Serial.println(F(x))
