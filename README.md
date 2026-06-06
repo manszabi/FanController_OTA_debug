@@ -3,7 +3,7 @@
 ESP32-C3 alapú **háromfokozatú ventilátor- és görgővezérlő**, BLE-n keresztül
 irányítható, OTA firmware-frissítéssel, és beépített diagnosztikai naplóval.
 
-**Aktuális firmware verzió:** `7.7.0` (2026-06-02)
+**Aktuális firmware verzió:** `7.8.1` (2026-06-02)
 
 ---
 
