@@ -3,7 +3,7 @@
 ESP32-C3 alapú **háromfokozatú ventilátor- és görgővezérlő**, BLE-n keresztül
 irányítható, OTA firmware-frissítéssel, és beépített diagnosztikai naplóval.
 
-**Aktuális firmware verzió:** `7.8.1` (2026-06-02)
+**Aktuális firmware verzió:** `7.8.3` (2026-06-06)
 
 ---
 
@@ -166,11 +166,20 @@ Fokozatváltáskor előbb **lekapcsol minden ventilátor-relé**, majd
 ### Failsafe (biztonsági) állapot
 
 Ha a `normalMode()` azt észleli, hogy **2 vagy több** ventilátor-relé egyszerre
-aktív, azonnal `STATE_FAILSAFE`-be vált:
+aktív (beragadt / inkonzisztens relé), vagy a kimenet-figyelés **STUCK**-ot jelez
+(zóna OFF, de van AC), azonnal `STATE_FAILSAFE`-be vált:
 
 - minden relé lekapcsol (`RELAY_EN` LOW),
 - mindkét LED ~2 Hz-cel villog,
 - **60 mp** után az eszköz deep sleepbe megy (`src=failsafe-timeout`).
+
+> **Failsafe belépéskor a görgő ÉS a fokozat állapota minden tárolóban
+> lenullázódik** (`[FIX-ESP-30b]`): logikai állapot (`currentZone=0`,
+> `rollerActive=false`), RTC (`savedZone=0`, `savedRoller=0`) **és** NVS
+> (`zone=0`, `roller=0`). Így ha failsafe **közben** egy hibás reset történik
+> (akár BROWNOUT, ami az RTC-t is törli), a boot-helyreállítás **semmiképp nem
+> indítja újra** a görgőt/ventilátort egy aktív hardverhiba mellett — az eszköz
+> `idle` állapotban marad. Az NVS-írás itt egyszer fut le (a failsafe belépésekor).
 
 ### Deep sleep (energiatakarékos alvás)
 
@@ -199,43 +208,62 @@ elkerülje az INT_WDT(5) watchdog-resetet ébredéskor:
 
 ## Fokozat-mentés és visszaállítás (RTC + NVS hibrid)
 
-A ventilátor-fokozatot **két** mechanizmus tárolja, egymást kiegészítve:
+A ventilátor-fokozatot **és a görgő (edzőgörgő) állapotát** is **két**
+mechanizmus tárolja, egymást kiegészítve:
 
 ### RTC_NOINIT (gyors, resetet túlél)
 
-- **Mikor:** azonnal, a `handleZoneChange()`-ben, **még a relé fizikai
-  kapcsolása ELŐTT** (ugyanabban a critical szekcióban).
-- **Mit:** `savedZone` + `savedZoneMagic` (0xFA11A5EE magic védi az érvényességet).
+- **Mikor:** azonnal — a fokozat a `handleZoneChange()`-ben (**még a relé fizikai
+  kapcsolása ELŐTT**, ugyanabban a critical szekcióban), a görgő pedig az
+  `activateRoller()` / `deactivateRoller()`-ben.
+- **Mit:** `savedZone` + `savedZoneMagic` (0xFA11A5EE), valamint
+  `savedRoller` + `savedRollerMagic` (0xF0117E55). A magic-ek védik az
+  érvényességet a BROWNOUT-törlés ellen.
 - **Miért:** BROWNOUT / reset után **azonnal**, biztonságosan visszaáll.
 - **Korlát:** **teljes áramtalanításkor elveszik** (az RTC RAM tápigényes).
 
 ### NVS (flash, áramtalanítást is túlél)
 
-- **Mikor:** csak ha egy fokozat **30 mp-ig stabil** maradt
-  (`NVS_SAVE_STABLE_MS`), a `loop()`-ból hívott `saveZoneToNvsIfStable()`-ben,
-  és **csak ha nem fut OTA**.
-- **Miért késleltetve:** hogy **ne írjunk flasht** a brownout-veszélyes kapcsolási
-  pillanatban (flash-korrupció elkerülése), és kíméljük a flash-kopást.
-- **Cache:** `nvsLastSavedZone` megakadályozza a fölösleges újraírást ugyanazzal
-  az értékkel.
+- **Mikor:** a fokozat csak ha **30 mp-ig stabil** maradt (`NVS_SAVE_STABLE_MS`),
+  vagy 5 percenként kényszerítve (`NVS_FORCE_SAVE_MS`); a görgő pedig ha eltér
+  az NVS-ben tárolttól. Mindkettő a `loop()`-ból hívott
+  `saveZoneToNvsIfStable()`-ben, **csak ha nem fut OTA**.
+- **Miért késleltetve / loop-ból:** hogy **ne írjunk flasht** a brownout-veszélyes
+  kapcsolási pillanatban (a be-/kikapcsolási áramlökéskor), és kíméljük a flash-kopást.
+- **Cache:** `nvsLastSavedZone` / `nvsLastSavedRoller` megakadályozza a fölösleges
+  újraírást ugyanazzal az értékkel.
 - **Korlát:** lassabb írás (~10–50 ms, blokkoló), ezért nem a kapcsolás előtt fut.
 
 ### Visszaállítás boot-kor
 
-A fokozat (és a görgő) **csak hibás reset után** áll vissza automatikusan:
+A fokozat és a görgő **csak hibás reset után** áll vissza automatikusan:
 
 ```
 ESP_RST_BROWNOUT | ESP_RST_UNKNOWN | ESP_RST_INT_WDT | ESP_RST_TASK_WDT | ESP_RST_WDT
 ```
 
-Prioritás: **RTC → NVS fallback**:
+**A görgő dönt először** (`[FIX-ESP-30]`): a visszaállítás **csak akkor** indítja
+újra a görgőt + ventilátort, ha a görgő a reset előtt **tényleg aktív volt**:
 
-1. ha az RTC magic érvényes és `savedZone` 1–3 → onnan,
-2. különben ha az NVS-ben van érvényes érték → onnan,
-3. különben nincs visszaállítás (fokozat 0).
+1. ha az RTC roller-magic érvényes → `savedRoller`,
+2. különben ha az NVS-ben van érvényes görgő-érték → onnan (BROWNOUT-fallback),
+3. különben **ismeretlen** → **nem indítunk** semmit (idle marad).
+
+Ha a görgő **nem volt aktív** (vagy ismeretlen), az eszköz **idle** állapotban
+marad — így egy spontán hibás reset **nem indít** váratlanul görgőt/ventilátort.
+
+Ha a görgő **aktív volt**, a fokozat **RTC-elsőbbséggel** áll vissza (a korábbi
+„magasabb zóna" heurisztika helyett — az RTC mindig a legfrissebb, az NVS késik):
+
+1. ha az RTC zóna-magic érvényes és `savedZone` 0–3 → onnan (a friss érték),
+2. különben ha az NVS-ben van érvényes érték (0–3) → onnan (BROWNOUT-fallback),
+3. különben **fallback `LEVEL:2`** (a görgő járt, ne maradjon 0-n).
 
 > **Szándékos** deep sleep utáni ébredésnél (reset ok = `DEEPSLEEP`) **nincs**
 > auto-visszaállítás — tiszta lappal indul, ami a kívánt viselkedés.
+>
+> **Failsafe után** (beragadt/inkonzisztens relé) szintén **nincs** auto-indítás:
+> a failsafe belépéskor minden állapot lenullázódik (lásd a Failsafe szakaszt).
 
 ---
 
@@ -284,7 +312,8 @@ A frissítés a dedikált OTA BLE szolgáltatáson keresztül történik. Védel
 | `app1` | app | ota_1 | 0x160000 | 0x150000 (1,3 MB) |
 | `spiffs` | data | spiffs | 0x2B0000 | 0x150000 (1,3 MB) |
 
-Az `nvs` partíció tárolja a fokozatot (`fan/zone`), a `spiffs` a diag naplót.
+Az `nvs` partíció tárolja a fokozatot (`fan/zone`) és a görgő állapotát
+(`fan/roller`), a `spiffs` a diag naplót.
 
 ---
 
@@ -328,7 +357,10 @@ python3 ota_diagnostic.py FanController_OTA_debug.ino.bin
 ## Verziótörténet (kivonat)
 
 | Verzió | Változás |
-|---|---|
+| --- | --- |
+| **7.8.3** | Failsafe belépéskor a görgő + fokozat állapota minden tárolóban (logikai + RTC + NVS) lenullázódik — failsafe közbeni hibás reset (akár BROWNOUT) **sem** indítja újra a görgőt/ventilátort. |
+| **7.8.2** | Boot-helyreállítás: zóna **RTC-elsőbbséggel** (a „magasabb zóna" heurisztika helyett); a **görgő állapota is perzisztens** (RTC+NVS), és csak akkor áll vissza, ha tényleg aktív volt → nincs idle-ből váratlan indítás; `saveZoneToNvsIfStable()` kritikus szekciós zóna-olvasás. |
+| 7.8.1 | Aszimmetrikus reakció a kimenet-figyelésben: STUCK → azonnali failsafe; NOAC → csak egyszeri figyelmeztetés + `diag.log`, failsafe nélkül. |
 | **7.8.0** | Fan relé KIMENET figyelése 3× H11AA1M optóval (GPIO6/7/20), AC-tudatos idő-ablakos detektálással; tartós eltérésnél failsafe + `diag.log`. |
 | 7.7.3 | Boot-diagnosztika a soros monitorra (RTC/NVS/`diag.log`). |
 | 7.7.2 | NVS force-mentés 5 percenként sűrű váltogatásnál is. |
