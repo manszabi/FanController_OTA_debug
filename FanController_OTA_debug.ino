@@ -93,6 +93,11 @@
 // [FIX-ESP-28] Boot-diagnosztika kiírása (RTC + NVS + diag.log) a soros monitorra.
 // Ha a program stabil, állítsd 0-ra a kikapcsoláshoz.
 #define BOOT_DIAG 1
+// [FIX-ESP-29] A fan relé KIMENET figyelése (3x H11AA1M optocsatoló). 1 = bekapcsolva
+// (mintavétel + STUCK failsafe + NOAC figyelmeztetés), 0 = teljesen kikapcsolva
+// (a kód NEM fordul bele, a GPIO6/7/20 lábak szabadon maradnak). A bekötés
+// részletei és a finomhangoló kapcsolók a PINS szekció után találhatók.
+#define FAN_SENSE_ENABLE 1
 
 #if DEBUG
 #define DBG(x) Serial.println(F(x))
@@ -176,10 +181,12 @@
 // jelenlétében NEM folyamatosan alacsony — a nullátmeneteknél ~100 Hz-cel HIGH-ra
 // ugrik. Ezért nem egyetlen digitalRead, hanem 40 ms-es idő-ABLAK: ha volt LOW
 // minta, akkor VAN AC. Debounce + zónaváltás utáni türelmi idő szűri a tranzienst.
-// Az elvárt (relaysEnabled && currentZone) és a mért állapot tartós eltérésénél
-// (beragadt relé: OFF de van AC; vagy nincs visszajelzés: ON de nincs AC) →
-// STATE_FAILSAFE + diag.log bejegyzés. Iránytól független kapcsolók a forrásban.
-#define FIRMWARE_VERSION "7.8.0"
+// Az elvárt (relaysEnabled && currentZone) és a mért állapot eltérésénél.
+// [FIX-ESP-29b] 2026-06-06: 7.8.1 — ASZIMMETRIKUS reakció: STUCK (zóna OFF, de
+// van AC → beragadt relé) AZONNAL failsafe + diag.log; NOAC (zóna ON, de nincs
+// AC) csak debounce-olt EGYSZERI figyelmeztetés + diag.log, FAILSAFE NÉLKÜL. A
+// STUCK-nál a diag.log SZINKRON (flush) íródik a STATE_FAILSAFE beállítása ELŐTT.
+#define FIRMWARE_VERSION "7.8.1"
 #define FIRMWARE_DATE "2026-06-06"
 
 // ===================== PINS =====================
@@ -193,6 +200,7 @@
 #define LED_RED 4
 
 // ===================== FAN RELÉ KIMENET FIGYELÉS (H11AA1M) =====================
+#if FAN_SENSE_ENABLE
 // [FIX-ESP-29] 2026-06-06: 3 db H11AA1M AC-bemenetű optocsatoló figyeli a fan
 // relék KIMENETÉT (van-e 230V AC a terhelésen). A H11AA1M bemenetén antiparallel
 // LED-pár van, ezért az AC MINDKÉT félhullámán vezet — KIVÉVE a nullátmenetek
@@ -220,18 +228,24 @@ const unsigned long AC_SENSE_DEBOUNCE_MS = 80;
 // Relé-parancs (zónaváltás / engedélyezés-tiltás) után ennyi ideig NEM értékelünk
 // eltérést — ráhagyás a relé mechanikai zárására + az opto-detektálás késleltetésére.
 const unsigned long FAN_SENSE_GRACE_MS = 1500;
-// Az eltérésnek ennyi ideig FOLYAMATOSAN fenn kell állnia a failsafe-hez (tranziens-szűrés).
+// NOAC (zóna ON, de nincs AC) esetén ennyi ideig FOLYAMATOSAN fenn kell állnia az
+// eltérésnek, mielőtt FIGYELMEZTETÜNK (tranziens-szűrés). A STUCK NEM ezt használja.
 const unsigned long FAN_SENSE_MISMATCH_CONFIRM_MS = 1000;
-// Melyik irányú eltérésnél lépjünk STATE_FAILSAFE-be (mindkettő alapból bekapcsolva):
-#define FAN_SENSE_FAILSAFE_ON_STUCK 1   // zóna OFF, de VAN AC → beragadt relé / szivárgás
-#define FAN_SENSE_FAILSAFE_ON_NOAC  1   // zóna ON, de NINCS AC → relé/biztosíték/fan/háló hiba
+// Aszimmetrikus reakció a két eltérés-irányra:
+//   STUCK (zóna OFF, de VAN AC → beragadt/hegedt relé): AZONNALI failsafe + diag.log.
+//   NOAC  (zóna ON, de NINCS AC → relé/biztosíték/fan/háló hiba): csak debounce-olt
+//         EGYSZERI figyelmeztetés + diag.log, NINCS failsafe (a rendszer fut tovább).
+#define FAN_SENSE_FAILSAFE_ON_STUCK 1   // STUCK → STATE_FAILSAFE (azonnal, türelmi idő után)
+#define FAN_SENSE_WARN_ON_NOAC      1   // NOAC  → figyelmeztetés + diag.log (failsafe NÉLKÜL)
 
 unsigned long fanSenseLastActive[3] = { 0, 0, 0 };   // utolsó aktív (LOW) minta ideje (ms)
 bool fanLineLive[3] = { false, false, false };        // SZŰRT: van-e AC az adott fan kimenetén
 unsigned long fanSenseChangeSince[3] = { 0, 0, 0 };   // mióta tér el a nyers a szűrttől (debounce)
 bool fanSenseSeen[3] = { false, false, false };       // láttunk-e már valaha aktív (LOW) mintát
 unsigned long fanSenseGraceUntil = 0;                 // eddig nem értékelünk eltérést
-unsigned long fanMismatchSince[3] = { 0, 0, 0 };      // mióta áll fenn az eltérés (0 = nincs)
+unsigned long fanMismatchSince[3] = { 0, 0, 0 };      // NOAC: mióta áll fenn az eltérés (0 = nincs)
+bool fanNoacWarned[3] = { false, false, false };      // NOAC: figyelmeztettünk-e már (ne spammeljen)
+#endif  // FAN_SENSE_ENABLE
 
 // ===================== FS / OTA DEFINES =====================
 #define FLASH SPIFFS
@@ -458,8 +472,10 @@ void handleBleCommand();
 void stateMachineStep();
 void normalMode();
 void saveZoneToNvsIfStable();  // [FIX-ESP-21]
+#if FAN_SENSE_ENABLE
 void monitorFanRelays();       // [FIX-ESP-29] H11AA1M kimenet-mintavétel + szűrés
 void checkFanRelayMismatch();  // [FIX-ESP-29] elvárt vs. mért → failsafe
+#endif
 void failSafeMode();
 void ota_boot_flow();
 void otaInitService(BLEServer* server);
@@ -1551,12 +1567,14 @@ void setup() {
   pinMode(LED_YELLOW, OUTPUT);
   pinMode(LED_RED, OUTPUT);
 
+#if FAN_SENSE_ENABLE
   // [FIX-ESP-29] H11AA1M kimenetek: belső pullup, opto vezetésekor (van AC) LOW.
   pinMode(FAN1_SENSE_PIN, INPUT_PULLUP);
   pinMode(FAN2_SENSE_PIN, INPUT_PULLUP);
   pinMode(FAN3_SENSE_PIN, INPUT_PULLUP);
   // Boot után adjunk extra időt a beállásra, mielőtt eltérést értékelnénk.
   fanSenseGraceUntil = millis() + 3000;
+#endif
 
   DBG("Relays safe OFF");
   digitalWrite(RELAY_EN, LOW);
@@ -1698,10 +1716,12 @@ void loop() {
     stateMachineStep();
   }
 
+#if FAN_SENSE_ENABLE
   // [FIX-ESP-29] H11AA1M mintavétel: MINDEN loop-iterációban (nem a 20 ms-es
   // checkInterval-hez kötve), mert az AC-ablakhoz gyors mintavétel kell. OTA
   // alatt szünetel (a fanok állapota úgyis befagy, és nem írunk flash-t).
   if (!otaIsRunning()) monitorFanRelays();
+#endif
 
   otaLoop();
 
@@ -1877,11 +1897,13 @@ void normalMode() {
   handleZoneChange();
   handleBleCommand();
 
-  // [FIX-ESP-29] A mért relé-kimenetek összevetése az elvárt állapottal. Tartós
-  // eltérésnél STATE_FAILSAFE-be lép (a fenti handleZoneChange/handleBleCommand
-  // után fut, hogy a friss currentZone/relaysEnabled állapottal dolgozzon).
+#if FAN_SENSE_ENABLE
+  // [FIX-ESP-29] A mért relé-kimenetek összevetése az elvárt állapottal. STUCK
+  // esetén STATE_FAILSAFE-be lép (a fenti handleZoneChange/handleBleCommand után
+  // fut, hogy a friss currentZone/relaysEnabled állapottal dolgozzon).
   checkFanRelayMismatch();
   if (currentState == STATE_FAILSAFE) return;
+#endif
 
   yield();
 }
@@ -2062,10 +2084,13 @@ void handleZoneChange() {
 
   portEXIT_CRITICAL(&zoneMux);
 
+#if FAN_SENSE_ENABLE
   // [FIX-ESP-29] Új relé-állapot → türelmi idő, és az eltérés-számlálók nullázása,
   // hogy a relé zárása + opto-detektálás késleltetése ne okozzon téves failsafe-et.
   fanSenseGraceUntil = nowhandleZoneChange + FAN_SENSE_GRACE_MS;
   fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
+  fanNoacWarned[0] = fanNoacWarned[1] = fanNoacWarned[2] = false;
+#endif
 
   // [FIX-ESP-21] Új fokozat → indul a stabilitás-számláló. Ha ez a fokozat
   // NVS_SAVE_STABLE_MS ideig megmarad, a saveZoneToNvsIfStable() lementi NVS-be.
@@ -2115,6 +2140,7 @@ void saveZoneToNvsIfStable() {
 }
 
 // ===================== FAN RELÉ KIMENET FIGYELÉS (H11AA1M) =====================
+#if FAN_SENSE_ENABLE
 // [FIX-ESP-29] A 3 H11AA1M kimenet mintavételezése + AC-tudatos szűrése. A
 // loop()-ból, MINDEN iterációban hívjuk. Csak a fanLineLive[] szűrt állapotot
 // frissíti (+ Serial log állapotváltáskor); az elvárt állapottal való összevetés
@@ -2159,64 +2185,79 @@ void monitorFanRelays() {
   }
 }
 
-// [FIX-ESP-29] Az aktuálisan MÉRT kimenet-állapot összevetése az ELVÁRTtal, és
-// FAILSAFE indítása tartós eltérésnél. Csak NORMAL módban, a relé-parancs utáni
-// türelmi idő (FAN_SENSE_GRACE_MS) letelte után fut. Kétféle eltérés:
-//   STUCK: a zóna OFF-ban van, de a kimeneten VAN AC → beragadt/hegedt relé.
-//   NOAC : a zóna ON-ban van, de a kimeneten NINCS AC → relé/biztosíték/fan/háló hiba.
+// [FIX-ESP-29] Az aktuálisan MÉRT kimenet-állapot összevetése az ELVÁRTtal.
+// Csak NORMAL módban, a relé-parancs utáni türelmi idő (FAN_SENSE_GRACE_MS) után.
+// ASZIMMETRIKUS reakció a két eltérés-irányra (a felhasználó kérése szerint):
+//   STUCK (zóna OFF, de VAN AC → beragadt relé): AZONNALI failsafe + figyelmeztetés
+//         + diag.log. A diag.log SZINKRON, a STATE_FAILSAFE beállítása ELŐTT íródik
+//         (f.close() → flush), így a failsafe-be lépés nem szakítja meg a naplózást.
+//   NOAC  (zóna ON, de NINCS AC → relé/biztosíték/fan/háló hiba): debounce-olt
+//         (FAN_SENSE_MISMATCH_CONFIRM_MS) EGYSZERI figyelmeztetés + diag.log, NINCS
+//         failsafe — a rendszer fut tovább. A latch (fanNoacWarned) megakadályozza
+//         a spam-et; az eltérés megszűntével újraélesedik.
 void checkFanRelayMismatch() {
   unsigned long now = millis();
 
-  // Relé-parancs utáni türelmi idő alatt nem értékelünk (relé + opto késleltetés).
-  if ((long)(fanSenseGraceUntil - now) > 0) {
-    for (int i = 0; i < 3; i++) fanMismatchSince[i] = 0;
-    return;
-  }
+  // Relé-parancs utáni türelmi idő alatt egyik irányt sem értékeljük.
+  bool inGrace = ((long)(fanSenseGraceUntil - now) > 0);
 
   for (int i = 0; i < 3; i++) {
     // Egy fan akkor kapna AC-t, ha a tápengedély (RELAY_EN) aktív ÉS ez a zóna jár.
     bool expectedLive = relaysEnabled && (currentZone == (i + 1));
     bool live = fanLineLive[i];
 
-    bool mismatch = false;
+    bool stuck = (!expectedLive && live);   // OFF-nak kéne, de VAN AC
+    bool noac  = (expectedLive && !live);   // ON-nak kéne, de NINCS AC
+
 #if FAN_SENSE_FAILSAFE_ON_STUCK
-    if (!expectedLive && live) mismatch = true;   // OFF-nak kéne, de VAN AC
-#endif
-#if FAN_SENSE_FAILSAFE_ON_NOAC
-    if (expectedLive && !live) mismatch = true;    // ON-nak kéne, de NINCS AC
+    // --- STUCK: azonnali failsafe (a fanLineLive már 40ms ablak + 80ms debounce-olt) ---
+    if (stuck && !inGrace) {
+      DBG_P("FAILSAFE: Fan");
+      Serial.print(i + 1);
+      Serial.println(F(" beragadt (van AC, de OFF) -> FAILSAFE"));
+
+      // ELŐBB a diag.log (szinkron flush), CSAK UTÁNA a failsafe-be lépés.
+      if (!diagStreaming) {
+        char e[80];
+        snprintf(e, sizeof(e), "[fanrelay] Fan%d STUCK exp=%d live=%d zone=%d t=%lus",
+                 i + 1, (int)expectedLive, (int)live, currentZone,
+                 (unsigned long)(now / 1000));
+        diagLog(e);
+      }
+
+      currentState = STATE_FAILSAFE;
+      return;
+    }
 #endif
 
-    if (!mismatch) {
+#if FAN_SENSE_WARN_ON_NOAC
+    // --- NOAC: debounce-olt EGYSZERI figyelmeztetés + diag.log, NINCS failsafe ---
+    if (noac && !inGrace) {
+      if (fanMismatchSince[i] == 0) fanMismatchSince[i] = now;
+      if (!fanNoacWarned[i] &&
+          (unsigned long)(now - fanMismatchSince[i]) >= FAN_SENSE_MISMATCH_CONFIRM_MS) {
+        DBG_P("FIGYELEM: Fan");
+        Serial.print(i + 1);
+        Serial.println(F(" nincs AC (ON, de nincs visszajelzes) - tovabb fut"));
+
+        if (!diagStreaming) {
+          char e[80];
+          snprintf(e, sizeof(e), "[fanrelay] Fan%d NOAC exp=%d live=%d zone=%d t=%lus",
+                   i + 1, (int)expectedLive, (int)live, currentZone,
+                   (unsigned long)(now / 1000));
+          diagLog(e);
+        }
+        fanNoacWarned[i] = true;  // egyszer figyelmeztetünk, amíg fennáll
+      }
+    } else {
+      // Nincs NOAC eltérés (vagy türelmi idő) → számláló + latch újraélesítése.
       fanMismatchSince[i] = 0;
-      continue;
+      fanNoacWarned[i] = false;
     }
-
-    // Eltérés: csak akkor lépünk, ha FOLYAMATOSAN fennáll a megerősítési ideig.
-    if (fanMismatchSince[i] == 0) fanMismatchSince[i] = now;
-    if ((unsigned long)(now - fanMismatchSince[i]) < FAN_SENSE_MISMATCH_CONFIRM_MS) continue;
-
-    bool stuck = (!expectedLive && live);
-
-    DBG_P("FAILSAFE: Fan");
-    Serial.print(i + 1);
-    Serial.println(stuck ? F(" beragadt (van AC, de OFF)")
-                         : F(" nincs AC (ON, de nincs visszajelzés)"));
-
-    // diag.log bejegyzés (DIAG? paranccsal utólag lekérdezhető). Streamelés
-    // közben kihagyjuk, hogy ne csonkoljuk a nyitott naplófájlt.
-    if (!diagStreaming) {
-      char e[80];
-      snprintf(e, sizeof(e), "[fanrelay] Fan%d %s exp=%d live=%d zone=%d t=%lus",
-               i + 1, stuck ? "STUCK" : "NOAC",
-               (int)expectedLive, (int)live, currentZone,
-               (unsigned long)(now / 1000));
-      diagLog(e);
-    }
-
-    currentState = STATE_FAILSAFE;
-    return;
+#endif
   }
 }
+#endif  // FAN_SENSE_ENABLE
 
 // ===================== ROLLER CONTROL =====================
 void activateRoller() {
@@ -2241,9 +2282,12 @@ void enableRelays() {
   digitalWrite(RELAY_EN, HIGH);
   delay(10);
   relaysEnabled = true;
+#if FAN_SENSE_ENABLE
   // [FIX-ESP-29] tápengedély váltott → türelmi idő az eltérés-figyelésnek
   fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
   fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
+  fanNoacWarned[0] = fanNoacWarned[1] = fanNoacWarned[2] = false;
+#endif
   DBG("Relays ON");
 }
 
@@ -2256,9 +2300,12 @@ void disableRelays() {
   digitalWrite(RELAY_EN, LOW);
   delay(10);
   relaysEnabled = false;
+#if FAN_SENSE_ENABLE
   // [FIX-ESP-29] tápengedély váltott → türelmi idő az eltérés-figyelésnek
   fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
   fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
+  fanNoacWarned[0] = fanNoacWarned[1] = fanNoacWarned[2] = false;
+#endif
   DBG("Relays OFF");
 }
 

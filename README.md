@@ -89,16 +89,25 @@ minta**, akkor van AC a kimeneten; folyamatos HIGH → nincs AC. Erre `80 ms`
 debounce és a relé-parancs utáni `1500 ms` türelmi idő épül.
 
 A mért állapotot (`fanLineLive[]`) a program összeveti az **elvárttal**
-(`relaysEnabled && currentZone == fan`). Ha a kettő **tartósan** (≥ `1000 ms`)
-eltér, **STATE_FAILSAFE**-be lép és bejegyzést ír a `diag.log`-ba (`DIAG?`
-paranccsal lekérdezhető). Kétféle eltérés:
+(`relaysEnabled && currentZone == fan`), és a két eltérés-irányra **aszimmetrikusan**
+reagál (`DIAG?` paranccsal a `diag.log` lekérdezhető):
 
-- **STUCK** – a zóna OFF, de van AC a kimeneten → beragadt/hegedt relé, szivárgás.
-- **NOAC** – a zóna ON, de nincs AC → relé/biztosíték/ventilátor/hálózat hiba.
+- **STUCK** – a zóna **OFF**, de **van AC** a kimeneten → beragadt/hegedt relé.
+  Reakció: **azonnali `STATE_FAILSAFE`** + figyelmeztetés + `diag.log`. A `diag.log`
+  **szinkron** (flush) íródik a failsafe-be lépés **előtt**, így a naplózás nem
+  szakad félbe. (A `fanLineLive` ekkor már a 40 ms ablak + 80 ms debounce-on átment.)
+- **NOAC** – a zóna **ON**, de **nincs AC** → relé/biztosíték/ventilátor/hálózat hiba.
+  Reakció: `FAN_SENSE_MISMATCH_CONFIRM_MS` (**1000 ms**) debounce után **egyszeri**
+  figyelmeztetés + `diag.log`, **failsafe NÉLKÜL** — a rendszer fut tovább. A latch
+  (`fanNoacWarned`) megakadályozza az ismételt naplózást, az eltérés megszűntével
+  (vagy relé-parancsnál) újraélesedik.
 
-A viselkedés a forrásban kapcsolható: `FAN_SENSE_ACTIVE_LOW` (polaritás),
-`FAN_SENSE_FAILSAFE_ON_STUCK`, `FAN_SENSE_FAILSAFE_ON_NOAC`, valamint az időzítő
-konstansok.
+A teljes funkció a program elején, a `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` kapcsolók
+mellett a **`FAN_SENSE_ENABLE`** makróval ki/be kapcsolható (`1` = be, `0` = ki).
+Kikapcsolva a hozzá tartozó kód **bele sem fordul**, és a GPIO6/7/20 lábak
+szabadon maradnak. Finomhangolás a PINS szekció után: `FAN_SENSE_ACTIVE_LOW`
+(polaritás), `FAN_SENSE_FAILSAFE_ON_STUCK` (STUCK → failsafe),
+`FAN_SENSE_WARN_ON_NOAC` (NOAC → figyelmeztetés), valamint az időzítő konstansok.
 
 ---
 
