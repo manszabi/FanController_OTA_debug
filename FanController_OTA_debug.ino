@@ -171,8 +171,16 @@
 // [FIX-ESP-28] 2026-06-02: 7.7.3 — boot-diagnosztika a soros monitorra (RTC magic
 // + savedZone, NVS zone, diag.log tartalma), egy jól olvasható blokkban. BOOT_DIAG
 // kapcsolóval kikapcsolható (0), ha a program stabil — ekkor nem fordul bele kód.
-#define FIRMWARE_VERSION "7.7.3"
-#define FIRMWARE_DATE "2026-06-02"
+// [FIX-ESP-29] 2026-06-06: 7.8.0 — fan relé KIMENET figyelése 3 db H11AA1M
+// AC-bemenetű optocsatolóval (GPIO6/7/20). FONTOS: a H11AA1M kimenete 230V AC
+// jelenlétében NEM folyamatosan alacsony — a nullátmeneteknél ~100 Hz-cel HIGH-ra
+// ugrik. Ezért nem egyetlen digitalRead, hanem 40 ms-es idő-ABLAK: ha volt LOW
+// minta, akkor VAN AC. Debounce + zónaváltás utáni türelmi idő szűri a tranzienst.
+// Az elvárt (relaysEnabled && currentZone) és a mért állapot tartós eltérésénél
+// (beragadt relé: OFF de van AC; vagy nincs visszajelzés: ON de nincs AC) →
+// STATE_FAILSAFE + diag.log bejegyzés. Iránytól független kapcsolók a forrásban.
+#define FIRMWARE_VERSION "7.8.0"
+#define FIRMWARE_DATE "2026-06-06"
 
 // ===================== PINS =====================
 #define RELAY_FAN1 10
@@ -183,6 +191,47 @@
 #define BUTTON_PIN 3
 #define LED_YELLOW 5
 #define LED_RED 4
+
+// ===================== FAN RELÉ KIMENET FIGYELÉS (H11AA1M) =====================
+// [FIX-ESP-29] 2026-06-06: 3 db H11AA1M AC-bemenetű optocsatoló figyeli a fan
+// relék KIMENETÉT (van-e 230V AC a terhelésen). A H11AA1M bemenetén antiparallel
+// LED-pár van, ezért az AC MINDKÉT félhullámán vezet — KIVÉVE a nullátmenetek
+// körül, ahol a LED-áram a küszöb alá esik. Emiatt a fototranzisztor kimenete
+// 230V AC jelenlétében NEM folyamatosan alacsony, hanem ~100 Hz-cel (50 Hz
+// hálózat → félhullámonként egyszer) rövid időre HIGH-ra ugrik a nullátmeneteknél.
+//   → Egyetlen digitalRead NEM elég. Idő-ABLAKOT figyelünk: ha az utóbbi
+//     AC_SENSE_WINDOW_MS-ben (> 1 hálózati periódus) LÁTTUNK aktív (LOW) mintát,
+//     akkor VAN AC a relé kimenetén. Folyamatos HIGH az ablakban → NINCS AC.
+// Bekötés (feltételezett): opto fototranzisztor kollektor → MCU láb (belső
+// pullup), emitter → GND. Így VAN AC → vezet az opto → LOW (aktív). Ha a hardver
+// fordított logikájú, állítsd a FAN_SENSE_ACTIVE_LOW-t 0-ra.
+#define FAN1_SENSE_PIN 6    // D4 — Fan1 (RELAY_FAN1) kimenetének figyelése
+#define FAN2_SENSE_PIN 7    // D5 — Fan2 (RELAY_FAN2) kimenetének figyelése
+#define FAN3_SENSE_PIN 20   // D7 — Fan3 (RELAY_FAN3) kimenetének figyelése
+#define FAN_SENSE_ACTIVE_LOW 1   // 1: LOW = van AC (vezet az opto); 0: fordított
+
+const uint8_t fanSensePins[3] = { FAN1_SENSE_PIN, FAN2_SENSE_PIN, FAN3_SENSE_PIN };
+
+// Az ablak > 1 hálózati periódus (20 ms @ 50 Hz), hogy a nullátmenetek körüli
+// rövid (max ~1-2 ms) HIGH réseket áthidaljuk. 40 ms bőven biztonságos.
+const unsigned long AC_SENSE_WINDOW_MS = 40;
+// A szűrt (élő / nincs-AC) állapotnak ennyi ideig STABILAN kell állnia a váltáshoz.
+const unsigned long AC_SENSE_DEBOUNCE_MS = 80;
+// Relé-parancs (zónaváltás / engedélyezés-tiltás) után ennyi ideig NEM értékelünk
+// eltérést — ráhagyás a relé mechanikai zárására + az opto-detektálás késleltetésére.
+const unsigned long FAN_SENSE_GRACE_MS = 1500;
+// Az eltérésnek ennyi ideig FOLYAMATOSAN fenn kell állnia a failsafe-hez (tranziens-szűrés).
+const unsigned long FAN_SENSE_MISMATCH_CONFIRM_MS = 1000;
+// Melyik irányú eltérésnél lépjünk STATE_FAILSAFE-be (mindkettő alapból bekapcsolva):
+#define FAN_SENSE_FAILSAFE_ON_STUCK 1   // zóna OFF, de VAN AC → beragadt relé / szivárgás
+#define FAN_SENSE_FAILSAFE_ON_NOAC  1   // zóna ON, de NINCS AC → relé/biztosíték/fan/háló hiba
+
+unsigned long fanSenseLastActive[3] = { 0, 0, 0 };   // utolsó aktív (LOW) minta ideje (ms)
+bool fanLineLive[3] = { false, false, false };        // SZŰRT: van-e AC az adott fan kimenetén
+unsigned long fanSenseChangeSince[3] = { 0, 0, 0 };   // mióta tér el a nyers a szűrttől (debounce)
+bool fanSenseSeen[3] = { false, false, false };       // láttunk-e már valaha aktív (LOW) mintát
+unsigned long fanSenseGraceUntil = 0;                 // eddig nem értékelünk eltérést
+unsigned long fanMismatchSince[3] = { 0, 0, 0 };      // mióta áll fenn az eltérés (0 = nincs)
 
 // ===================== FS / OTA DEFINES =====================
 #define FLASH SPIFFS
@@ -409,6 +458,8 @@ void handleBleCommand();
 void stateMachineStep();
 void normalMode();
 void saveZoneToNvsIfStable();  // [FIX-ESP-21]
+void monitorFanRelays();       // [FIX-ESP-29] H11AA1M kimenet-mintavétel + szűrés
+void checkFanRelayMismatch();  // [FIX-ESP-29] elvárt vs. mért → failsafe
 void failSafeMode();
 void ota_boot_flow();
 void otaInitService(BLEServer* server);
@@ -1500,6 +1551,13 @@ void setup() {
   pinMode(LED_YELLOW, OUTPUT);
   pinMode(LED_RED, OUTPUT);
 
+  // [FIX-ESP-29] H11AA1M kimenetek: belső pullup, opto vezetésekor (van AC) LOW.
+  pinMode(FAN1_SENSE_PIN, INPUT_PULLUP);
+  pinMode(FAN2_SENSE_PIN, INPUT_PULLUP);
+  pinMode(FAN3_SENSE_PIN, INPUT_PULLUP);
+  // Boot után adjunk extra időt a beállásra, mielőtt eltérést értékelnénk.
+  fanSenseGraceUntil = millis() + 3000;
+
   DBG("Relays safe OFF");
   digitalWrite(RELAY_EN, LOW);
   delay(100);
@@ -1639,6 +1697,11 @@ void loop() {
     lastCheck = now2;
     stateMachineStep();
   }
+
+  // [FIX-ESP-29] H11AA1M mintavétel: MINDEN loop-iterációban (nem a 20 ms-es
+  // checkInterval-hez kötve), mert az AC-ablakhoz gyors mintavétel kell. OTA
+  // alatt szünetel (a fanok állapota úgyis befagy, és nem írunk flash-t).
+  if (!otaIsRunning()) monitorFanRelays();
 
   otaLoop();
 
@@ -1813,6 +1876,12 @@ void normalMode() {
   handleLEDs(nowNormalMode);
   handleZoneChange();
   handleBleCommand();
+
+  // [FIX-ESP-29] A mért relé-kimenetek összevetése az elvárt állapottal. Tartós
+  // eltérésnél STATE_FAILSAFE-be lép (a fenti handleZoneChange/handleBleCommand
+  // után fut, hogy a friss currentZone/relaysEnabled állapottal dolgozzon).
+  checkFanRelayMismatch();
+  if (currentState == STATE_FAILSAFE) return;
 
   yield();
 }
@@ -1993,6 +2062,11 @@ void handleZoneChange() {
 
   portEXIT_CRITICAL(&zoneMux);
 
+  // [FIX-ESP-29] Új relé-állapot → türelmi idő, és az eltérés-számlálók nullázása,
+  // hogy a relé zárása + opto-detektálás késleltetése ne okozzon téves failsafe-et.
+  fanSenseGraceUntil = nowhandleZoneChange + FAN_SENSE_GRACE_MS;
+  fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
+
   // [FIX-ESP-21] Új fokozat → indul a stabilitás-számláló. Ha ez a fokozat
   // NVS_SAVE_STABLE_MS ideig megmarad, a saveZoneToNvsIfStable() lementi NVS-be.
   zoneStableSince = nowhandleZoneChange;
@@ -2040,6 +2114,110 @@ void saveZoneToNvsIfStable() {
   Serial.println((forceSave && !stableSave) ? " (force 5min)" : " (stable 30s)");
 }
 
+// ===================== FAN RELÉ KIMENET FIGYELÉS (H11AA1M) =====================
+// [FIX-ESP-29] A 3 H11AA1M kimenet mintavételezése + AC-tudatos szűrése. A
+// loop()-ból, MINDEN iterációban hívjuk. Csak a fanLineLive[] szűrt állapotot
+// frissíti (+ Serial log állapotváltáskor); az elvárt állapottal való összevetés
+// és a failsafe a checkFanRelayMismatch()-ben (csak NORMAL módban) történik.
+//
+// AC jelenlétében az opto kimenete az idő ~80-90%-ában LOW, a nullátmenetek
+// körül rövid HIGH résekkel. Ezért: "aktív minta" = LOW. Az állapot akkor ÉLŐ,
+// ha az utóbbi AC_SENSE_WINDOW_MS-ben volt LOW minta (a HIGH réseket áthidalja).
+void monitorFanRelays() {
+  unsigned long now = millis();
+
+  for (int i = 0; i < 3; i++) {
+    int raw = digitalRead(fanSensePins[i]);
+#if FAN_SENSE_ACTIVE_LOW
+    bool activeSample = (raw == LOW);
+#else
+    bool activeSample = (raw == HIGH);
+#endif
+
+    if (activeSample) {
+      fanSenseLastActive[i] = now;
+      fanSenseSeen[i] = true;
+    }
+
+    // Nyers, ablakozott élő-állapot: láttunk-e aktív (LOW) mintát az ablakon belül.
+    bool rawLive = fanSenseSeen[i] &&
+                   ((unsigned long)(now - fanSenseLastActive[i]) < AC_SENSE_WINDOW_MS);
+
+    // Debounce: csak akkor frissítjük a szűrt állapotot, ha a nyers tartósan eltér.
+    if (rawLive != fanLineLive[i]) {
+      if (fanSenseChangeSince[i] == 0) fanSenseChangeSince[i] = now;
+      if ((unsigned long)(now - fanSenseChangeSince[i]) >= AC_SENSE_DEBOUNCE_MS) {
+        fanLineLive[i] = rawLive;
+        fanSenseChangeSince[i] = 0;
+        DBG_P("Fan");
+        Serial.print(i + 1);
+        Serial.println(rawLive ? F(" kimenet: VAN 230V AC") : F(" kimenet: nincs AC"));
+      }
+    } else {
+      fanSenseChangeSince[i] = 0;
+    }
+  }
+}
+
+// [FIX-ESP-29] Az aktuálisan MÉRT kimenet-állapot összevetése az ELVÁRTtal, és
+// FAILSAFE indítása tartós eltérésnél. Csak NORMAL módban, a relé-parancs utáni
+// türelmi idő (FAN_SENSE_GRACE_MS) letelte után fut. Kétféle eltérés:
+//   STUCK: a zóna OFF-ban van, de a kimeneten VAN AC → beragadt/hegedt relé.
+//   NOAC : a zóna ON-ban van, de a kimeneten NINCS AC → relé/biztosíték/fan/háló hiba.
+void checkFanRelayMismatch() {
+  unsigned long now = millis();
+
+  // Relé-parancs utáni türelmi idő alatt nem értékelünk (relé + opto késleltetés).
+  if ((long)(fanSenseGraceUntil - now) > 0) {
+    for (int i = 0; i < 3; i++) fanMismatchSince[i] = 0;
+    return;
+  }
+
+  for (int i = 0; i < 3; i++) {
+    // Egy fan akkor kapna AC-t, ha a tápengedély (RELAY_EN) aktív ÉS ez a zóna jár.
+    bool expectedLive = relaysEnabled && (currentZone == (i + 1));
+    bool live = fanLineLive[i];
+
+    bool mismatch = false;
+#if FAN_SENSE_FAILSAFE_ON_STUCK
+    if (!expectedLive && live) mismatch = true;   // OFF-nak kéne, de VAN AC
+#endif
+#if FAN_SENSE_FAILSAFE_ON_NOAC
+    if (expectedLive && !live) mismatch = true;    // ON-nak kéne, de NINCS AC
+#endif
+
+    if (!mismatch) {
+      fanMismatchSince[i] = 0;
+      continue;
+    }
+
+    // Eltérés: csak akkor lépünk, ha FOLYAMATOSAN fennáll a megerősítési ideig.
+    if (fanMismatchSince[i] == 0) fanMismatchSince[i] = now;
+    if ((unsigned long)(now - fanMismatchSince[i]) < FAN_SENSE_MISMATCH_CONFIRM_MS) continue;
+
+    bool stuck = (!expectedLive && live);
+
+    DBG_P("FAILSAFE: Fan");
+    Serial.print(i + 1);
+    Serial.println(stuck ? F(" beragadt (van AC, de OFF)")
+                         : F(" nincs AC (ON, de nincs visszajelzés)"));
+
+    // diag.log bejegyzés (DIAG? paranccsal utólag lekérdezhető). Streamelés
+    // közben kihagyjuk, hogy ne csonkoljuk a nyitott naplófájlt.
+    if (!diagStreaming) {
+      char e[80];
+      snprintf(e, sizeof(e), "[fanrelay] Fan%d %s exp=%d live=%d zone=%d t=%lus",
+               i + 1, stuck ? "STUCK" : "NOAC",
+               (int)expectedLive, (int)live, currentZone,
+               (unsigned long)(now / 1000));
+      diagLog(e);
+    }
+
+    currentState = STATE_FAILSAFE;
+    return;
+  }
+}
+
 // ===================== ROLLER CONTROL =====================
 void activateRoller() {
   digitalWrite(RELAY_ROLLER, LOW);
@@ -2063,6 +2241,9 @@ void enableRelays() {
   digitalWrite(RELAY_EN, HIGH);
   delay(10);
   relaysEnabled = true;
+  // [FIX-ESP-29] tápengedély váltott → türelmi idő az eltérés-figyelésnek
+  fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
+  fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
   DBG("Relays ON");
 }
 
@@ -2075,6 +2256,9 @@ void disableRelays() {
   digitalWrite(RELAY_EN, LOW);
   delay(10);
   relaysEnabled = false;
+  // [FIX-ESP-29] tápengedély váltott → türelmi idő az eltérés-figyelésnek
+  fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
+  fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
   DBG("Relays OFF");
 }
 
