@@ -186,7 +186,17 @@
 // van AC → beragadt relé) AZONNAL failsafe + diag.log; NOAC (zóna ON, de nincs
 // AC) csak debounce-olt EGYSZERI figyelmeztetés + diag.log, FAILSAFE NÉLKÜL. A
 // STUCK-nál a diag.log SZINKRON (flush) íródik a STATE_FAILSAFE beállítása ELŐTT.
-#define FIRMWARE_VERSION "7.8.1"
+// [FIX-ESP-30] 2026-06-06: 7.8.2 — boot-helyreállítás három javítása:
+// (1) Zóna-visszaállításnál az RTC ELSŐBBSÉGE (a "magasabb zóna" heurisztika
+//     helyett): az RTC mindig a legfrissebb (minden váltásnál íródik), az NVS
+//     késik (30s/5perc), így lefelé váltás után a max() elavult magas zónát
+//     hozott vissza. Most: RTC jó → RTC; egyébként NVS; egyébként fallback 2.
+// (2) A GÖRGŐ állapota is perzisztálódik (RTC magic + NVS), és boot után CSAK
+//     akkor kapcsol vissza, ha tényleg aktív volt. Eddig minden hibás reset
+//     feltétel nélkül bekapcsolta → idle állapotban váratlan görgő/fan indítás.
+//     Ismeretlen állapotnál (nincs RTC magic és nincs NVS rekord) nem indítunk.
+// (3) saveZoneToNvsIfStable() a currentZone-t zoneMux kritikus szekcióban olvassa.
+#define FIRMWARE_VERSION "7.8.2"
 #define FIRMWARE_DATE "2026-06-06"
 
 // ===================== PINS =====================
@@ -415,6 +425,15 @@ RTC_NOINIT_ATTR uint32_t savedZoneMagic;
 RTC_NOINIT_ATTR int savedZone;
 #define SAVED_ZONE_MAGIC 0xFA11A5EE
 
+// [FIX-ESP-30] A görgő (edzőgörgő) állapotának mentése is RTC-be, külön magic-cel.
+// Eddig csak a fokozat (savedZone) volt perzisztens; a rollerActive sima RAM-bool
+// volt, így minden hibás reset után FELTÉTEL NÉLKÜL bekapcsolt a görgő — idle
+// állapotban is váratlan indítást okozva. Most boot után csak akkor áll vissza a
+// görgő, ha tényleg aktív volt (RTC, BROWNOUT-túléléshez NVS fallbackkel).
+RTC_NOINIT_ATTR uint32_t savedRollerMagic;
+RTC_NOINIT_ATTR int savedRoller;       // 1 = aktív volt, 0 = nem
+#define SAVED_ROLLER_MAGIC 0xF0117E55
+
 // [FIX-ESP-21] Hibrid: NVS-be is mentjük a fokozatot, hogy TELJES áramtalanítás
 // után is visszaálljon (az RTC csak resetet él túl, áramtalanítást nem). DE csak
 // akkor írunk NVS-be, ha egy fokozat HOSSZABB IDEIG (NVS_SAVE_STABLE_MS) stabil
@@ -423,6 +442,7 @@ RTC_NOINIT_ATTR int savedZone;
 // régi érték marad.
 Preferences fanPrefs;
 int nvsLastSavedZone = -1;             // amit utoljára NVS-be írtunk (cache, hogy ne írjunk feleslegesen)
+int nvsLastSavedRoller = -1;           // [FIX-ESP-30] görgő NVS cache (-1 = nincs mentve)
 unsigned long zoneStableSince = 0;     // mikortól stabil a jelenlegi fokozat
 bool nvsZonePending = false;           // van-e még nem mentett stabil fokozat
 const unsigned long NVS_SAVE_STABLE_MS = 30000;  // 30 mp stabilitás után mentünk
@@ -1327,6 +1347,8 @@ void printBootDiag() {
 #if BOOT_DIAG
   bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
   bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
+  bool rollerRtcValid = (savedRollerMagic == SAVED_ROLLER_MAGIC &&
+                         (savedRoller == 0 || savedRoller == 1));
 
   Serial.println();
   Serial.println(F("===================================="));
@@ -1341,12 +1363,24 @@ void printBootDiag() {
   Serial.println(F(")"));
   Serial.print(F("RTC savedZone: "));
   Serial.println(savedZone);
+  // [FIX-ESP-30] görgő RTC állapot
+  Serial.print(F("RTC savedRoller: "));
+  Serial.print(savedRoller);
+  Serial.print(F(" ("));
+  Serial.print(rollerRtcValid ? F("valid") : F("invalid"));
+  Serial.println(F(")"));
 
   // --- NVS ---
   Serial.print(F("NVS zone: "));
   Serial.print(nvsLastSavedZone);
   Serial.print(F(" ("));
   Serial.print(nvsValid ? F("valid") : F("none/invalid"));
+  Serial.println(F(")"));
+  // [FIX-ESP-30] görgő NVS állapot
+  Serial.print(F("NVS roller: "));
+  Serial.print(nvsLastSavedRoller);
+  Serial.print(F(" ("));
+  Serial.print((nvsLastSavedRoller == 0 || nvsLastSavedRoller == 1) ? F("valid") : F("none/invalid"));
   Serial.println(F(")"));
 
   // --- diag.log ---
@@ -1643,6 +1677,7 @@ void setup() {
   // az eszköz, az NVS érvénytelennek számít, és működik a fallback LEVEL:2.
   fanPrefs.begin("fan", true);  // read-only
   nvsLastSavedZone = fanPrefs.getInt("zone", -1);
+  nvsLastSavedRoller = fanPrefs.getInt("roller", -1);  // [FIX-ESP-30] görgő (-1 = nincs)
   fanPrefs.end();
 
   // [FIX-ESP-22] 2026-06-01: a WDT reseteket is bevesszük a visszaállításba.
@@ -1654,50 +1689,55 @@ void setup() {
       lastBootResetReason == ESP_RST_INT_WDT ||
       lastBootResetReason == ESP_RST_TASK_WDT ||
       lastBootResetReason == ESP_RST_WDT) {
-    DBG("Boot after BROWNOUT/UNKNOWN/WDT → activating roller");
-    enableRelays();
-    delay(100);
-    activateRoller();
 
-    // [FIX-ESP-25] Intelligens zóna-visszaállítás:
-    // - RTC jó (0-3) → RTC érték
-    // - RTC hibás, NVS jó (0-3) → NVS érték
-    // - Mindkettő jó, de különbözik → magasabb zóna
-    // - Mindkettő érvényes és 0 → LEVEL:0 (kikapcsol, de görgő jár)
-    // - Mindkettő HIBÁS (érvénytelen adat) → fallback LEVEL:2
-    bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
-    bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
-    int restoreZone = 0;
+    // [FIX-ESP-30] A görgő (edzőgörgő) korábbi állapotának meghatározása. Az RTC
+    // a friss forrás (minden váltáskor íródik); a BROWNOUT viszont törölheti az
+    // RTC-t, ezért NVS fallback. Csak akkor indítjuk újra a görgőt + ventilátort,
+    // ha tényleg AKTÍV volt — így idle állapotból nincs váratlan indítás.
+    bool rollerRtcValid = (savedRollerMagic == SAVED_ROLLER_MAGIC &&
+                           (savedRoller == 0 || savedRoller == 1));
+    bool rollerNvsValid = (nvsLastSavedRoller == 0 || nvsLastSavedRoller == 1);
+    int rollerWas;
+    if (rollerRtcValid)      rollerWas = savedRoller;          // RTC friss
+    else if (rollerNvsValid) rollerWas = nvsLastSavedRoller;   // NVS fallback (brownout)
+    else                     rollerWas = -1;                   // ismeretlen → nem indítunk
 
-    if (rtcValid && nvsValid) {
-      // Mindkettő érvényes (0-3)
-      if (savedZone == 0 && nvsLastSavedZone == 0) {
-        // Mindkettő 0 → LEVEL:0
-        restoreZone = 0;
-        DBG("Both RTC and NVS are 0 → setting zone to 0");
-      } else {
-        // Mindkettő jó, de legalább egy nem 0 → magasabb zóna
-        restoreZone = (savedZone > nvsLastSavedZone) ? savedZone : nvsLastSavedZone;
-        DBG_P("Restoring fan zone (both valid 0-3, selecting higher): ");
-        Serial.println(restoreZone);
-      }
-    } else if (rtcValid) {
-      // RTC jó (0-3)
-      restoreZone = savedZone;
-      DBG_P("Restoring fan zone (RTC valid 0-3): ");
-      Serial.println(restoreZone);
-    } else if (nvsValid) {
-      // NVS jó (0-3)
-      restoreZone = nvsLastSavedZone;
-      DBG_P("Restoring fan zone (NVS valid 0-3): ");
-      Serial.println(restoreZone);
+    if (rollerWas != 1) {
+      // A görgő nem volt aktív (vagy nincs róla érvényes rekord) → idle volt,
+      // nem indítunk magától semmit. A relék kikapcsolva maradnak.
+      DBG("Boot after error reset, roller was NOT active → staying idle");
     } else {
-      // Mindkettő hibás → fallback LEVEL:2
-      restoreZone = 2;
-      DBG("Both RTC and NVS invalid → defaulting to zone 2");
-    }
+      DBG("Boot after BROWNOUT/UNKNOWN/WDT, roller was active → resuming");
+      enableRelays();
+      delay(100);
+      activateRoller();
 
-    setFanZone(restoreZone, SRC_BUTTON);
+      // [FIX-ESP-30] Zóna-visszaállítás RTC-elsőbbséggel (a korábbi "magasabb
+      // zóna" heurisztika helyett). Az RTC mindig a LEGFRISSEBB (minden váltásnál
+      // íródik), az NVS késik (30s/5perc) — így lefelé váltás után a max() elavult
+      // magas zónát hozott vissza. Prioritás:
+      // - RTC jó (0-3)  → RTC érték (a friss)
+      // - RTC hibás, NVS jó (0-3) → NVS érték (brownout-fallback)
+      // - Mindkettő hibás → fallback LEVEL:2 (a görgő járt, ne maradjon 0-n)
+      bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
+      bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
+      int restoreZone;
+
+      if (rtcValid) {
+        restoreZone = savedZone;
+        DBG_P("Restoring fan zone (RTC valid, freshest): ");
+        Serial.println(restoreZone);
+      } else if (nvsValid) {
+        restoreZone = nvsLastSavedZone;
+        DBG_P("Restoring fan zone (RTC invalid, NVS fallback): ");
+        Serial.println(restoreZone);
+      } else {
+        restoreZone = 2;
+        DBG("Both RTC and NVS invalid → defaulting to zone 2");
+      }
+
+      setFanZone(restoreZone, SRC_BUTTON);
+    }
   }
 
   // [FIX-ESP-28] Boot-diagnosztika kiírása (RTC + NVS + diag.log). BOOT_DIAG=0 → üres.
@@ -2117,26 +2157,47 @@ void handleZoneChange() {
 //      fokozat teljes áramtalanításra — de legfeljebb 5 percenként (flash-kímélő).
 void saveZoneToNvsIfStable() {
   unsigned long now = millis();
-  int z = currentZone;
+
+  // [FIX-ESP-30] A currentZone-t a zoneMux kritikus szekcióban olvassuk, összhangban
+  // azzal, ahogy a handleZoneChange() írja (konzisztens olvasás).
+  int z;
+  portENTER_CRITICAL(&zoneMux);
+  z = currentZone;
+  portEXIT_CRITICAL(&zoneMux);
+  int rollerNow = rollerActive ? 1 : 0;  // bool, atomi olvasás
 
   bool stableSave = nvsZonePending && (now - zoneStableSince >= NVS_SAVE_STABLE_MS);
   bool forceSave  = (now - lastNvsSaveTime >= NVS_FORCE_SAVE_MS) && (z != nvsLastSavedZone);
-
-  if (!stableSave && !forceSave) return;
-
   if (stableSave) nvsZonePending = false;  // a stabil-pending elintézve, nem pörgünk rá
 
-  if (z == nvsLastSavedZone) return;  // már ez van NVS-ben, ne írjunk feleslegesen
+  // [FIX-ESP-30] A görgő állapotát is itt mentjük (loop()-ból, a kapcsolási
+  // áramlökés pillanatától távol), ha eltér az NVS-ben tárolttól.
+  bool zoneNeedsWrite   = (stableSave || forceSave) && (z != nvsLastSavedZone);
+  bool rollerNeedsWrite = (rollerNow != nvsLastSavedRoller);
+
+  if (!zoneNeedsWrite && !rollerNeedsWrite) return;
 
   fanPrefs.begin("fan", false);
-  fanPrefs.putInt("zone", z);
+  if (zoneNeedsWrite) {
+    fanPrefs.putInt("zone", z);
+    nvsLastSavedZone = z;
+    lastNvsSaveTime = now;
+  }
+  if (rollerNeedsWrite) {
+    fanPrefs.putInt("roller", rollerNow);
+    nvsLastSavedRoller = rollerNow;
+  }
   fanPrefs.end();
-  nvsLastSavedZone = z;
-  lastNvsSaveTime = now;
 
-  DBG_P("NVS zone saved: ");
-  Serial.print(z);
-  Serial.println((forceSave && !stableSave) ? " (force 5min)" : " (stable 30s)");
+  if (zoneNeedsWrite) {
+    DBG_P("NVS zone saved: ");
+    Serial.print(z);
+    Serial.println((forceSave && !stableSave) ? " (force 5min)" : " (stable 30s)");
+  }
+  if (rollerNeedsWrite) {
+    DBG_P("NVS roller saved: ");
+    Serial.println(rollerNow);
+  }
 }
 
 // ===================== FAN RELÉ KIMENET FIGYELÉS (H11AA1M) =====================
@@ -2263,12 +2324,19 @@ void checkFanRelayMismatch() {
 void activateRoller() {
   digitalWrite(RELAY_ROLLER, LOW);
   rollerActive = true;
+  // [FIX-ESP-30] RTC mentés (magic-cel védve), hogy hibás reset után tudjuk,
+  // a görgő aktív volt-e. Az NVS-be a saveZoneToNvsIfStable() menti a loop()-ból
+  // (flash-kímélő, és nem a bekapcsolási áramlökés pillanatában).
+  savedRoller = 1;
+  savedRollerMagic = SAVED_ROLLER_MAGIC;
   DBG("Roller ON");
 }
 
 void deactivateRoller() {
   digitalWrite(RELAY_ROLLER, HIGH);
   rollerActive = false;
+  savedRoller = 0;
+  savedRollerMagic = SAVED_ROLLER_MAGIC;
   DBG("Roller OFF");
 }
 
