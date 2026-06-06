@@ -196,7 +196,11 @@
 //     feltétel nélkül bekapcsolta → idle állapotban váratlan görgő/fan indítás.
 //     Ismeretlen állapotnál (nincs RTC magic és nincs NVS rekord) nem indítunk.
 // (3) saveZoneToNvsIfStable() a currentZone-t zoneMux kritikus szekcióban olvassa.
-#define FIRMWARE_VERSION "7.8.2"
+// [FIX-ESP-30b] 2026-06-06: 7.8.3 — failsafe BELÉPÉSKOR a görgő ÉS a ventilátor-
+// fokozat állapota minden tárolóban (logikai + RTC + NVS) lenullázódik, hogy egy
+// failsafe közbeni hibás reset (akár BROWNOUT, ami az RTC-t is törli) SE indítsa
+// újra a görgőt/ventilátort. A boot-helyreállítás failsafe után 'idle'-t lát.
+#define FIRMWARE_VERSION "7.8.3"
 #define FIRMWARE_DATE "2026-06-06"
 
 // ===================== PINS =====================
@@ -1952,6 +1956,39 @@ void failSafeMode() {
   if (!failStartSet) {
     failStart = millis();
     failStartSet = true;
+
+    // [FIX-ESP-30b] Failsafe BELÉPÉS → a görgő ÉS a ventilátor-fokozat állapotát
+    // is LENULLÁZZUK, minden tárolóban. Failsafe egy hibaállapot (beragadt/hiányzó
+    // relé) — ha közben egy hibás reset (akár BROWNOUT, ami az RTC-t is törli)
+    // történik, a boot-helyreállítás SEMMIKÉPP ne indítsa újra a görgőt/ventilátort.
+    // Ezért: (a) logikai állapot nullázása (currentZone, rollerActive, pending-ek),
+    // (b) RTC nullázása (savedZone/savedRoller=0, magic érvényes → boot 'idle'-t lát),
+    // (c) NVS nullázása (brownout-túlélés, mert a BROWNOUT az RTC-t kiütheti).
+    portENTER_CRITICAL(&zoneMux);
+    currentZone = 0;
+    pendingZone = 0;
+    zoneChanging = false;
+    zoneChangeInProgress = false;
+    savedZone = 0;
+    savedZoneMagic = SAVED_ZONE_MAGIC;
+    savedRoller = 0;
+    savedRollerMagic = SAVED_ROLLER_MAGIC;
+    portEXIT_CRITICAL(&zoneMux);
+    rollerActive = false;
+    nvsZonePending = false;
+
+    // NVS perzisztens nullázás — flash-írás a kritikus szekción KÍVÜL, és csak
+    // ha nem fut OTA. Egyszer fut le (a !failStartSet őr miatt), nem minden ciklusban.
+    if (!otaIsRunning()) {
+      fanPrefs.begin("fan", false);
+      fanPrefs.putInt("zone", 0);
+      fanPrefs.putInt("roller", 0);
+      fanPrefs.end();
+      nvsLastSavedZone = 0;
+      nvsLastSavedRoller = 0;
+      lastNvsSaveTime = millis();
+    }
+    DBG("FAILSAFE entry → roller+fan state zeroed (RTC+NVS)");
   }
 
   digitalWrite(RELAY_FAN1, HIGH);
