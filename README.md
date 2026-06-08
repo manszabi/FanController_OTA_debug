@@ -3,7 +3,7 @@
 ESP32-C3 alapú **háromfokozatú ventilátor- és görgővezérlő**, BLE-n keresztül
 irányítható, OTA firmware-frissítéssel, és beépített diagnosztikai naplóval.
 
-**Aktuális firmware verzió:** `7.8.3` (2026-06-06)
+**Aktuális firmware verzió:** `7.8.4` (2026-06-06)
 
 ---
 
@@ -358,6 +358,7 @@ python3 ota_diagnostic.py FanController_OTA_debug.ino.bin
 
 | Verzió | Változás |
 | --- | --- |
+| **7.8.4** | A relé-kimenet ellenőrzések (2+ relé LOW GPIO-visszaolvasás; FAN_SENSE esetén a 230V AC eltérés) a `normalMode()`-ban a fokozatváltás **után** futnak, hogy a frissen beállított relé-állapotot értékeljék. Failsafe-logika és küszöbök változatlanok. |
 | **7.8.3** | Failsafe belépéskor a görgő + fokozat állapota minden tárolóban (logikai + RTC + NVS) lenullázódik — failsafe közbeni hibás reset (akár BROWNOUT) **sem** indítja újra a görgőt/ventilátort. |
 | **7.8.2** | Boot-helyreállítás: zóna **RTC-elsőbbséggel** (a „magasabb zóna" heurisztika helyett); a **görgő állapota is perzisztens** (RTC+NVS), és csak akkor áll vissza, ha tényleg aktív volt → nincs idle-ből váratlan indítás; `saveZoneToNvsIfStable()` kritikus szekciós zóna-olvasás. |
 | 7.8.1 | Aszimmetrikus reakció a kimenet-figyelésben: STUCK → azonnali failsafe; NOAC → csak egyszeri figyelmeztetés + `diag.log`, failsafe nélkül. |

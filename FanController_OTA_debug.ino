@@ -200,7 +200,11 @@
 // fokozat állapota minden tárolóban (logikai + RTC + NVS) lenullázódik, hogy egy
 // failsafe közbeni hibás reset (akár BROWNOUT, ami az RTC-t is törli) SE indítsa
 // újra a görgőt/ventilátort. A boot-helyreállítás failsafe után 'idle'-t lát.
-#define FIRMWARE_VERSION "7.8.3"
+// [FIX-ESP-31] 2026-06-06: 7.8.4 — a relé-kimenet ellenőrzések (a 2+ relé LOW
+// GPIO-visszaolvasás, és FAN_SENSE esetén a 230V AC eltérés) a normalMode()-ban a
+// fokozatváltás (handleZoneChange) UTÁNRA kerültek, hogy a frissen beállított
+// relé-állapotot értékeljék. A failsafe-logika és a küszöbök változatlanok.
+#define FIRMWARE_VERSION "7.8.4"
 #define FIRMWARE_DATE "2026-06-06"
 
 // ===================== PINS =====================
@@ -1796,18 +1800,10 @@ void stateMachineStep() {
 void normalMode() {
   unsigned long nowNormalMode = millis();
 
-  int f1 = digitalRead(RELAY_FAN1);
-  int f2 = digitalRead(RELAY_FAN2);
-  int f3 = digitalRead(RELAY_FAN3);
-
-  int lowCount = (f1 == LOW) + (f2 == LOW) + (f3 == LOW);
-
-  if (lowCount >= 2) {
-    DBG("FAILSAFE: 2 fans LOW");
-    currentState = STATE_FAILSAFE;
-    return;
-  }
-
+  // [FIX-ESP-31] A relé-kimenet ellenőrzések (2+ relé LOW; és FAN_SENSE esetén a
+  // mért 230V AC eltérés) a fokozatváltás UTÁNRA kerültek — lásd a függvény végén,
+  // a handleZoneChange()/handleBleCommand() után —, hogy a frissen beállított
+  // relé-állapotot értékeljék. A failsafe-logika és a küszöb VÁLTOZATLAN.
   failStartSet = false;
   failStart = 0;
 
@@ -1941,10 +1937,25 @@ void normalMode() {
   handleZoneChange();
   handleBleCommand();
 
+  // [FIX-ESP-31] Relé vezérlő-kimenet ellenőrzése a fokozatváltás (handleZoneChange)
+  // + BLE-parancs UTÁN, hogy a frissen beállított relé-állapotot lássa (eddig a
+  // normalMode() elején, a váltás ELŐTT futott). A logika és a küszöb VÁLTOZATLAN:
+  // ha 2+ ventilátor-relé egyszerre aktív (LOW), az tiltott/beragadt állapot →
+  // azonnali STATE_FAILSAFE (és a függvény hátralévő része kimarad, mint eddig).
+  int f1 = digitalRead(RELAY_FAN1);
+  int f2 = digitalRead(RELAY_FAN2);
+  int f3 = digitalRead(RELAY_FAN3);
+  if ((f1 == LOW) + (f2 == LOW) + (f3 == LOW) >= 2) {
+    DBG("FAILSAFE: 2 fans LOW");
+    currentState = STATE_FAILSAFE;
+    return;
+  }
+
 #if FAN_SENSE_ENABLE
-  // [FIX-ESP-29] A mért relé-kimenetek összevetése az elvárt állapottal. STUCK
-  // esetén STATE_FAILSAFE-be lép (a fenti handleZoneChange/handleBleCommand után
-  // fut, hogy a friss currentZone/relaysEnabled állapottal dolgozzon).
+  // [FIX-ESP-29] A mért relé-kimenetek (230V AC jelenléte) összevetése az elvárt
+  // állapottal. STUCK esetén STATE_FAILSAFE. A handleZoneChange/handleBleCommand
+  // után fut, hogy a friss currentZone/relaysEnabled állapottal dolgozzon
+  // (+ FAN_SENSE_GRACE_MS türelmi idő a kapcsolási tranziensre).
   checkFanRelayMismatch();
   if (currentState == STATE_FAILSAFE) return;
 #endif
