@@ -97,7 +97,7 @@
 // (mintavétel + STUCK failsafe + NOAC figyelmeztetés), 0 = teljesen kikapcsolva
 // (a kód NEM fordul bele, a GPIO6/7/20 lábak szabadon maradnak). A bekötés
 // részletei és a finomhangoló kapcsolók a PINS szekció után találhatók.
-#define FAN_SENSE_ENABLE 0
+#define FAN_SENSE_ENABLE 1
 
 #if DEBUG
 #define DBG(x) Serial.println(F(x))
@@ -204,7 +204,11 @@
 // GPIO-visszaolvasás, és FAN_SENSE esetén a 230V AC eltérés) a normalMode()-ban a
 // fokozatváltás (handleZoneChange) UTÁNRA kerültek, hogy a frissen beállított
 // relé-állapotot értékeljék. A failsafe-logika és a küszöbök változatlanok.
-#define FIRMWARE_VERSION "7.8.4"
+// [FIX-ESP-32] 2026-06-06: 7.8.5 — FAN_SENSE_ENABLE bekapcsolva (0→1): a 3 db
+// H11AA1M opto (GPIO6/7/20) figyeli a relé-kimeneteken a 230V AC-t. STUCK (zóna
+// OFF, de van AC → beragadt relé) → szinkron diag.log + azonnali failsafe; NOAC
+// (zóna ON, de nincs AC) → egyszeri figyelmeztetés + diag.log, failsafe nélkül.
+#define FIRMWARE_VERSION "7.8.5"
 #define FIRMWARE_DATE "2026-06-06"
 
 // ===================== PINS =====================

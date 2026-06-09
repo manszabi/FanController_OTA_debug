@@ -3,7 +3,7 @@
 ESP32-C3 alapú **háromfokozatú ventilátor- és görgővezérlő**, BLE-n keresztül
 irányítható, OTA firmware-frissítéssel, és beépített diagnosztikai naplóval.
 
-**Aktuális firmware verzió:** `7.8.4` (2026-06-06)
+**Aktuális firmware verzió:** `7.8.5` (2026-06-06)
 
 ---
 
@@ -104,8 +104,8 @@ reagál (`DIAG?` paranccsal a `diag.log` lekérdezhető):
 
 A teljes funkció a program elején, a `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` kapcsolók
 mellett a **`FAN_SENSE_ENABLE`** makróval ki/be kapcsolható (`1` = be, `0` = ki).
-Kikapcsolva a hozzá tartozó kód **bele sem fordul**, és a GPIO6/7/20 lábak
-szabadon maradnak. Finomhangolás a PINS szekció után: `FAN_SENSE_ACTIVE_LOW`
+**Jelenleg `1` (bekapcsolva).** Kikapcsolva a hozzá tartozó kód **bele sem fordul**,
+és a GPIO6/7/20 lábak szabadon maradnak. Finomhangolás a PINS szekció után: `FAN_SENSE_ACTIVE_LOW`
 (polaritás), `FAN_SENSE_FAILSAFE_ON_STUCK` (STUCK → failsafe),
 `FAN_SENSE_WARN_ON_NOAC` (NOAC → figyelmeztetés), valamint az időzítő konstansok.
 
@@ -358,6 +358,7 @@ python3 ota_diagnostic.py FanController_OTA_debug.ino.bin
 
 | Verzió | Változás |
 | --- | --- |
+| **7.8.5** | `FAN_SENSE` bekapcsolva (`FAN_SENSE_ENABLE` 0→1): a 3× H11AA1M opto figyeli a relé-kimeneteken a 230V AC-t. STUCK → szinkron `diag.log` + azonnali failsafe; NOAC → egyszeri figyelmeztetés + `diag.log` (failsafe nélkül). |
 | **7.8.4** | A relé-kimenet ellenőrzések (2+ relé LOW GPIO-visszaolvasás; FAN_SENSE esetén a 230V AC eltérés) a `normalMode()`-ban a fokozatváltás **után** futnak, hogy a frissen beállított relé-állapotot értékeljék. Failsafe-logika és küszöbök változatlanok. |
 | **7.8.3** | Failsafe belépéskor a görgő + fokozat állapota minden tárolóban (logikai + RTC + NVS) lenullázódik — failsafe közbeni hibás reset (akár BROWNOUT) **sem** indítja újra a görgőt/ventilátort. |
 | **7.8.2** | Boot-helyreállítás: zóna **RTC-elsőbbséggel** (a „magasabb zóna" heurisztika helyett); a **görgő állapota is perzisztens** (RTC+NVS), és csak akkor áll vissza, ha tényleg aktív volt → nincs idle-ből váratlan indítás; `saveZoneToNvsIfStable()` kritikus szekciós zóna-olvasás. |
