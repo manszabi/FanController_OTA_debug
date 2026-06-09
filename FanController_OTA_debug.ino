@@ -97,7 +97,7 @@
 // (mintavétel + STUCK failsafe + NOAC figyelmeztetés), 0 = teljesen kikapcsolva
 // (a kód NEM fordul bele, a GPIO6/7/20 lábak szabadon maradnak). A bekötés
 // részletei és a finomhangoló kapcsolók a PINS szekció után találhatók.
-#define FAN_SENSE_ENABLE 0
+#define FAN_SENSE_ENABLE 1
 
 #if DEBUG
 #define DBG(x) Serial.println(F(x))
@@ -204,7 +204,16 @@
 // GPIO-visszaolvasás, és FAN_SENSE esetén a 230V AC eltérés) a normalMode()-ban a
 // fokozatváltás (handleZoneChange) UTÁNRA kerültek, hogy a frissen beállított
 // relé-állapotot értékeljék. A failsafe-logika és a küszöbök változatlanok.
-#define FIRMWARE_VERSION "7.8.4"
+// [FIX-ESP-32] 2026-06-06: 7.8.5 — FAN_SENSE_ENABLE bekapcsolva (0→1): a 3 db
+// H11AA1M opto (GPIO6/7/20) figyeli a relé-kimeneteken a 230V AC-t. STUCK (zóna
+// OFF, de van AC → beragadt relé) → szinkron diag.log + azonnali failsafe; NOAC
+// (zóna ON, de nincs AC) → egyszeri figyelmeztetés + diag.log, failsafe nélkül.
+// [FIX-ESP-33] 2026-06-06: 7.8.6 — a failsafe-állapot nullázása (RTC+NVS+logikai)
+// közös zeroStateForFailsafe() helperbe került, és már a failsafe DETEKTÁLÁSAKOR
+// lefut (STUCK + 2-relé-LOW ág, a STATE_FAILSAFE beállítása ELŐTT). Így megszűnik
+// a detektálás és a failSafeMode() első lefutása közti időablak: failsafe melletti
+// hibás reset SEM állíthatja vissza a reléket. A helper idempotens (cache-alapú NVS).
+#define FIRMWARE_VERSION "7.8.6"
 #define FIRMWARE_DATE "2026-06-06"
 
 // ===================== PINS =====================
@@ -500,6 +509,7 @@ void handleBleCommand();
 void stateMachineStep();
 void normalMode();
 void saveZoneToNvsIfStable();  // [FIX-ESP-21]
+void zeroStateForFailsafe();   // [FIX-ESP-33] failsafe-állapot perzisztens nullázása
 #if FAN_SENSE_ENABLE
 void monitorFanRelays();       // [FIX-ESP-29] H11AA1M kimenet-mintavétel + szűrés
 void checkFanRelayMismatch();  // [FIX-ESP-29] elvárt vs. mért → failsafe
@@ -1947,6 +1957,7 @@ void normalMode() {
   int f3 = digitalRead(RELAY_FAN3);
   if ((f1 == LOW) + (f2 == LOW) + (f3 == LOW) >= 2) {
     DBG("FAILSAFE: 2 fans LOW");
+    zeroStateForFailsafe();  // [FIX-ESP-33] nullázás MÉG a STATE_FAILSAFE előtt
     currentState = STATE_FAILSAFE;
     return;
   }
@@ -1963,42 +1974,51 @@ void normalMode() {
   yield();
 }
 
+// [FIX-ESP-33] A failsafe-állapot perzisztens nullázása EGY helyen. A failsafe
+// DETEKTÁLÁSAKOR hívjuk (a STATE_FAILSAFE beállítása ELŐTT), így egy közvetlenül
+// utána bekövetkező hibás reset (akár BROWNOUT, ami az RTC-t is törli) SEM
+// állíthatja vissza a reléket — megszűnik a detektálás és a failSafeMode() első
+// lefutása közti időablak. A failSafeMode() belépőjéből is hívjuk (idempotens
+// biztosíték). Nullázza: (a) a logikai állapotot (currentZone, rollerActive,
+// pending-ek), (b) az RTC-t (savedZone/savedRoller=0, érvényes magic → boot 'idle'),
+// (c) az NVS-t (brownout-túlélés). NVS-t csak akkor ír, ha tényleg változott
+// (cache-alapú, flash-kímélő), és nem OTA közben.
+void zeroStateForFailsafe() {
+  portENTER_CRITICAL(&zoneMux);
+  currentZone = 0;
+  pendingZone = 0;
+  zoneChanging = false;
+  zoneChangeInProgress = false;
+  savedZone = 0;
+  savedZoneMagic = SAVED_ZONE_MAGIC;
+  savedRoller = 0;
+  savedRollerMagic = SAVED_ROLLER_MAGIC;
+  portEXIT_CRITICAL(&zoneMux);
+  rollerActive = false;
+  nvsZonePending = false;
+
+  // NVS perzisztens nullázás — a kritikus szekción KÍVÜL. Csak ha tényleg eltér
+  // (a cache 0-tól), így a kétszeri hívás (detektálás + failSafeMode belépő) nem
+  // ír feleslegesen flash-t.
+  if (!otaIsRunning() && (nvsLastSavedZone != 0 || nvsLastSavedRoller != 0)) {
+    fanPrefs.begin("fan", false);
+    fanPrefs.putInt("zone", 0);
+    fanPrefs.putInt("roller", 0);
+    fanPrefs.end();
+    nvsLastSavedZone = 0;
+    nvsLastSavedRoller = 0;
+    lastNvsSaveTime = millis();
+  }
+}
+
 void failSafeMode() {
   if (!failStartSet) {
     failStart = millis();
     failStartSet = true;
 
-    // [FIX-ESP-30b] Failsafe BELÉPÉS → a görgő ÉS a ventilátor-fokozat állapotát
-    // is LENULLÁZZUK, minden tárolóban. Failsafe egy hibaállapot (beragadt/hiányzó
-    // relé) — ha közben egy hibás reset (akár BROWNOUT, ami az RTC-t is törli)
-    // történik, a boot-helyreállítás SEMMIKÉPP ne indítsa újra a görgőt/ventilátort.
-    // Ezért: (a) logikai állapot nullázása (currentZone, rollerActive, pending-ek),
-    // (b) RTC nullázása (savedZone/savedRoller=0, magic érvényes → boot 'idle'-t lát),
-    // (c) NVS nullázása (brownout-túlélés, mert a BROWNOUT az RTC-t kiütheti).
-    portENTER_CRITICAL(&zoneMux);
-    currentZone = 0;
-    pendingZone = 0;
-    zoneChanging = false;
-    zoneChangeInProgress = false;
-    savedZone = 0;
-    savedZoneMagic = SAVED_ZONE_MAGIC;
-    savedRoller = 0;
-    savedRollerMagic = SAVED_ROLLER_MAGIC;
-    portEXIT_CRITICAL(&zoneMux);
-    rollerActive = false;
-    nvsZonePending = false;
-
-    // NVS perzisztens nullázás — flash-írás a kritikus szekción KÍVÜL, és csak
-    // ha nem fut OTA. Egyszer fut le (a !failStartSet őr miatt), nem minden ciklusban.
-    if (!otaIsRunning()) {
-      fanPrefs.begin("fan", false);
-      fanPrefs.putInt("zone", 0);
-      fanPrefs.putInt("roller", 0);
-      fanPrefs.end();
-      nvsLastSavedZone = 0;
-      nvsLastSavedRoller = 0;
-      lastNvsSaveTime = millis();
-    }
+    // [FIX-ESP-30b]/[FIX-ESP-33] Idempotens biztosíték: ha a failsafe detektálásakor
+    // már megtörtént a nullázás, itt (a cache miatt) már nem ír újra NVS-t.
+    zeroStateForFailsafe();
     DBG("FAILSAFE entry → roller+fan state zeroed (RTC+NVS)");
   }
 
@@ -2325,7 +2345,8 @@ void checkFanRelayMismatch() {
       Serial.print(i + 1);
       Serial.println(F(" beragadt (van AC, de OFF) -> FAILSAFE"));
 
-      // ELŐBB a diag.log (szinkron flush), CSAK UTÁNA a failsafe-be lépés.
+      // ELŐBB a diag.log (szinkron flush, a VALÓDI zónával), CSAK UTÁNA a nullázás
+      // és a failsafe-be lépés.
       if (!diagStreaming) {
         char e[80];
         snprintf(e, sizeof(e), "[fanrelay] Fan%d STUCK exp=%d live=%d zone=%d t=%lus",
@@ -2334,6 +2355,7 @@ void checkFanRelayMismatch() {
         diagLog(e);
       }
 
+      zeroStateForFailsafe();  // [FIX-ESP-33] nullázás MÉG a STATE_FAILSAFE előtt
       currentState = STATE_FAILSAFE;
       return;
     }
