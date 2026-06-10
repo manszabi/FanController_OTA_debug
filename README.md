@@ -397,6 +397,9 @@ arduino-cli lib install OneButton          # vagy GitHubról, ha a registry nem 
 
 ## Verziótörténet (kivonat)
 
+A teljes, részletes változás-napló ([MOD-x] / [FIX-ESP-x] bejegyzésekkel):
+**[verhistory.md](verhistory.md)**.
+
 | Verzió | Változás |
 | --- | --- |
 | **7.9.0** | OTA per-part **CRC32 + újraküldés**: a `0xFC` 4 byte zlib-CRC32-t hordoz, a fogadó a SPIFFS-írás előtt ellenőrzi, hibánál ugyanazt a partot újrakéri (max 5×, utána abort + diag.log). Soros part-feldolgozás (a kettős-buffer versenyhibák kiváltva), CRC32 boot-önteszt. Régi (CRC nélküli) küldő nem támogatott. |

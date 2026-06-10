@@ -1,0 +1,70 @@
+# Verziótörténet — FanController_OTA_debug
+
+A firmware részletes változás-naplója. (A `FanController_OTA_debug.ino` fejlécéből
+kiemelve; az aktuális verziót a `FIRMWARE_VERSION` define tartalmazza.)
+
+---
+
+## v7.0.0 → v7.1.0 — OTA stabilizálás
+
+- **[MOD-1]** `performUpdate()` – `delay(5000)` kiváltva: `otaPendingReboot` flag + `millis()` alapú várakozás.
+- **[MOD-2]** `OTA_INSTALL_MODE` – `delay(2000)` kiváltva (×2): `otaInstallWaiting` flag + `millis()` alapú várakozás.
+- **[MOD-3]** `performUpdate()` – WDT törlése flash írás előtt: `esp_task_wdt_delete(NULL)` a watchdog timeout ellen.
+- **[MOD-4]** `FIRMWARE_VERSION` + `FIRMWARE_DATE` frissítve.
+- **[MOD-6]** 2026-05-24 – `handleMultiClick` (3+ kattintás): visszavált automata módba (`manualMode = false`, `bleEnabled = true`), kikapcsolja a kézi zónát, és újraindítja a BLE advertising-et.
+
+### OTA hibajavítások (2026-05-24)
+
+- **[FIX-ESP-1]** OTA utolsó part nem íródott ki: `OTA_UPDATE_MODE`-ban az `otaWriteFile` blokk az `otaCur+1==otaParts` ellenőrzés UTÁN volt → javítva.
+- **[FIX-ESP-1c]** Buffer logika kijavítva: INSTALL_MODE-ban az 1b-s „megfordított" buffer logika rossz volt → most ugyanaz, mint UPDATE_MODE, duplikáció ellen `otaWriteFile=false` védelem.
+- **[FIX-ESP-2]** Debug logging az `otaWriteBinary`-be.
+- **[FIX-ESP-3]** `otaWriteFile=false` hibás esetben is, hogy ne ragadjunk végtelen ciklusban.
+- **[FIX-ESP-4]** Ténylegesen kiírt byte-okat számoljuk, nem a kértet (részleges write detektálás).
+- **[FIX-ESP-5]** VALÓDI hiba: módváltás `otaWriteFile` true állapotban. A SPIFFS write 100+ ms ideig fut, eközben a 42. part 0xFC megérkezik és újra true-ra állítja az `otaWriteFile`-t. A write végén false lesz, a következő loop sor azonnal módot vált — a 42. part írása örökre kimarad. Javítás: módváltás csak akkor, ha `otaWriteFile=false`.
+
+### Production javítások (2026-05-24)
+
+- **[FIX-ESP-6]** WDT visszahelyezése a `performUpdate()` végén az `esp_task_wdt_delete()` után — különben "task not found" spam végtelen ideig.
+- **[FIX-ESP-7]** Boot után `update.bin` maradványok takarítása, "update.bin is dir" hibák elkerülésére.
+- **[FIX-ESP-8]** WDT deinit boot elején, "TWDT already initialized" üzenet elkerülésére soft reset után.
+- **[FIX-ESP-9]** `OTA_DEBUG=0` production módra — eltávolítja a per-csomag log spam-et (OTA packet, FS write…).
+
+### SPIFFS védelmek (2026-05-24)
+
+- **[FIX-ESP-10]** Részleges write detektálás az `otaWriteBinary`-ben. Ha a `file.write()` kevesebbet ír, mint amennyi kellene (SPIFFS megtelt), az OTA-t azonnal megszakítjuk és töröljük a részleges `update.bin`-t. Régen végtelen "OTA incomplete" loop volt 96000-en ragadva.
+- **[FIX-ESP-11]** Előzetes méret-ellenőrzés a 0xFE parancsnál: ha a firmware nem fér el a SPIFFS-en, hibát küldünk vissza a kliensnek és nem kezdjük el az OTA-t (4 KB tartalékot tartunk a SPIFFS overhead-nek).
+- **[FIX-ESP-12]** 2026-05-24 – ismétlődő "OTA file complete": a `performUpdate()` után az 5 mp-es nemblokkoló reboot várakozás közben az INSTALL_MODE újra meg újra lefutott, ismételten triggerelve a complete és `updateFromFS` hívásokat. Javítás: `otaTotalBytes = 0` mielőtt meghívjuk az `updateFromFS()`-t, így a feltételek hamisak lesznek a következő körökben.
+
+---
+
+## v7.2.x – v7.9.x — verziónkénti változások
+
+- **[FIX-ESP-PROD]** 2026-05-24: **7.2.0** production verzió, az összes OTA javítással.
+- **[MOD-7]** 2026-05-24: **7.3.0** — FIX-ESP-10, FIX-ESP-11, FIX-ESP-12 és MOD-6 (`handleMultiClick`) hozzáadva, custom partition table (1.3MB APP + 1.3MB SPIFFS).
+- **[FIX-ESP-13]** 2026-05-30: **7.5.0** — boot reset-detektálás `esp_reset_reason()` alapra állítva (brownout/panic/WDT után újraindul, nem alszik el), reset-ok + heap logolás hozzáadva a "30-40 perc után leáll" tünethez.
+- **[FIX-ESP-14]** 2026-05-30: **7.6.0** — SPIFFS diag napló (`/diag.log`): boot reset ok + alacsony memória bejegyzés, BLE-n lekérdezhető a `DIAG?` paranccsal (`DIAGCLR` töröl). Darabolt, nemblokkoló notify streamelés a fan karakterisztikán.
+- **[FIX-ESP-14b]** 2026-05-30: **7.6.1** — naplózás csak ténylegesen szükséges esetben (hibás reset + lowmem, a POWERON/DEEPSLEEP/SW kihagyva → OTA-t nem zavarja), heap-mentes (String helyett snprintf/stack), kis fájl (512B). Külön Python kliens (`diag_client.py`) a lekérdezéshez AUTH-tal.
+- **[FIX-ESP-14c]** 2026-05-30: **7.6.2** — átnézés utáni javítások: a diag csomagméret 20B (alapértelmezett BLE MTU mellett is sértetlen napló), és lowmem-írás halasztása streamelés közben (ne csonkoljuk a nyitott naplófájlt).
+- **[FIX-ESP-15]** 2026-05-30: **7.6.3** — `enterDeepSleep()` forrásának naplózása (`[sleep] src=button-longpress/idle-timeout/failsafe-timeout`), hogy a szándékos alvás megkülönböztethető legyen a brownout/panik leállástól.
+- **[FIX-ESP-16]** 2026-05-31: **7.6.4** — OTA magic-byte ellenőrzés az `Update.begin()` előtt. Ha a feltöltött bináris első byte-ja nem 0xE9, érthető "rossz firmware" hibát adunk a félrevezető "Decryption error" helyett (amit az arduino-esp32 Update könyvtár U_AES_DECRYPT_AUTO módja dob nem-0xE9 fejlécre). A hiba a diag naplóba is bekerül (`[ota] bad magic=0x..`).
+- **[FIX-ESP-18]** 2026-06-01: **7.6.5** — `RELAY_SWITCH_DELAY_MS` 100 → 10 ms. A fokozat-váltás break-before-make ideje csökkentve, hogy a teljes táp-tranziens (régi fan ki + új fan be) rövid idő alatt lezajljon, és ne legyen két külön mély feszültségrogyás. MEGJEGYZÉS: a tényleges break minimum ~20 ms a `checkInterval` (20 ms) miatt, mert a `handleZoneChange()` csak annyi időnként fut. A 230V AC ventilátor BROWNOUT csak hardveres snubber/MOV-val szűnik meg.
+- **[FIX-ESP-19]** 2026-06-01: **7.6.6** — BROWNOUT/UNKNOWN reset után görgő + relék automatikus bekapcsolása boot-ban (ne maradjon "halott" az eszköz).
+- **[FIX-ESP-20]** 2026-06-01: **7.6.6** — az összeomlás előtti ventilátor-fokozat is visszaáll (RTC_NOINIT-be mentve, magic-cel védve a BROWNOUT-törlés ellen).
+- **[FIX-ESP-21]** 2026-06-01: **7.6.7** — hibrid fokozat-mentés: RTC (resetre) + NVS (teljes áramtalanításra). NVS-be csak akkor írunk, ha egy fokozat 30 mp-ig stabil maradt (nem a brownout-veszélyes váltási pillanatban, flash-kímélő). Boot-helyreállítás prioritás: RTC → NVS fallback. NVS partíció már létezik, nem kell partíció-átalakítás.
+- **[FIX-ESP-22]** 2026-06-01: **7.6.8** — a WDT reseteket (INT_WDT/TASK_WDT/WDT) is bevesszük a görgő + fokozat visszaállításba (eddig csak BROWNOUT/UNKNOWN).
+- **[FIX-ESP-23]** 2026-06-02: **7.6.9** — hosszabb türelmi szünetek az `enterDeepSleep()`-ben, hogy az ESP rendszere stabilizálódjon az alvás előtt (INT_WDT ellen): BLE disconnect után 200→500 ms, BLE stop után 100→300 ms, relé OFF után +200 ms, LED OFF után +200 ms, és +500 ms közvetlenül a deep sleep előtt.
+- **[FIX-ESP-25]** 2026-06-02: **7.7.0** — intelligens zóna-helyreállítás hibás reset után: RTC jó → RTC; RTC hibás + NVS jó → NVS; mindkettő jó, de különbözik → magasabb zóna; mindkettő hibás → fallback LEVEL:2. Így az UNKNOWN/BROWNOUT/WDT resetkor sosem marad halott állapotban.
+- **[FIX-ESP-26]** 2026-06-02: **7.7.1** — a boot NVS olvasás default értéke −1 (nem 0!), hogy a "nincs NVS mentés" eset megkülönböztethető legyen a "mentett 0" esettől. Enélkül az NVS mindig "érvényes 0"-nak látszott, és a fallback LEVEL:2 sosem futott.
+- **[FIX-ESP-27]** 2026-06-02: **7.7.2** — NVS force-mentés: sűrű váltogatásnál (ahol sosincs 30 s nyugalom) is mentsünk legalább 5 percenként, ha az aktuális fokozat eltér az NVS-ben tárolttól. Így a stressz/edzés alatti utolsó fokozat is megőrződik teljes áramtalanításra, de flash-kímélő módon (max 5 percenként egy írás).
+- **[FIX-ESP-28]** 2026-06-02: **7.7.3** — boot-diagnosztika a soros monitorra (RTC magic + savedZone, NVS zone, diag.log tartalma), egy jól olvasható blokkban. `BOOT_DIAG` kapcsolóval kikapcsolható (0), ha a program stabil — ekkor nem fordul bele kód.
+- **[FIX-ESP-29]** 2026-06-06: **7.8.0** — fan relé KIMENET figyelése 3 db H11AA1M AC-bemenetű optocsatolóval (GPIO6/7/20). FONTOS: a H11AA1M kimenete 230V AC jelenlétében NEM folyamatosan alacsony — a nullátmeneteknél ~100 Hz-cel HIGH-ra ugrik. Ezért nem egyetlen `digitalRead`, hanem 40 ms-es idő-ABLAK: ha volt LOW minta, akkor VAN AC. Debounce + zónaváltás utáni türelmi idő szűri a tranzienst. Az elvárt (`relaysEnabled && currentZone`) és a mért állapot eltérésénél reagál.
+- **[FIX-ESP-29b]** 2026-06-06: **7.8.1** — ASZIMMETRIKUS reakció: STUCK (zóna OFF, de van AC → beragadt relé) AZONNAL failsafe + diag.log; NOAC (zóna ON, de nincs AC) csak debounce-olt EGYSZERI figyelmeztetés + diag.log, FAILSAFE NÉLKÜL. A STUCK-nál a diag.log SZINKRON (flush) íródik a STATE_FAILSAFE beállítása ELŐTT.
+- **[FIX-ESP-30]** 2026-06-06: **7.8.2** — boot-helyreállítás három javítása:
+  1. Zóna-visszaállításnál az RTC ELSŐBBSÉGE (a "magasabb zóna" heurisztika helyett): az RTC mindig a legfrissebb (minden váltásnál íródik), az NVS késik (30 s/5 perc), így lefelé váltás után a max() elavult magas zónát hozott vissza. Most: RTC jó → RTC; egyébként NVS; egyébként fallback 2.
+  2. A GÖRGŐ állapota is perzisztálódik (RTC magic + NVS), és boot után CSAK akkor kapcsol vissza, ha tényleg aktív volt. Eddig minden hibás reset feltétel nélkül bekapcsolta → idle állapotban váratlan görgő/fan indítás. Ismeretlen állapotnál (nincs RTC magic és nincs NVS rekord) nem indítunk.
+  3. `saveZoneToNvsIfStable()` a `currentZone`-t zoneMux kritikus szekcióban olvassa.
+- **[FIX-ESP-30b]** 2026-06-06: **7.8.3** — failsafe BELÉPÉSKOR a görgő ÉS a ventilátor-fokozat állapota minden tárolóban (logikai + RTC + NVS) lenullázódik, hogy egy failsafe közbeni hibás reset (akár BROWNOUT, ami az RTC-t is törli) SE indítsa újra a görgőt/ventilátort. A boot-helyreállítás failsafe után 'idle'-t lát.
+- **[FIX-ESP-31]** 2026-06-06: **7.8.4** — a relé-kimenet ellenőrzések (a 2+ relé LOW GPIO-visszaolvasás, és FAN_SENSE esetén a 230V AC eltérés) a `normalMode()`-ban a fokozatváltás (`handleZoneChange`) UTÁNRA kerültek, hogy a frissen beállított relé-állapotot értékeljék. A failsafe-logika és a küszöbök változatlanok.
+- **[FIX-ESP-32]** 2026-06-06: **7.8.5** — `FAN_SENSE_ENABLE` bekapcsolva (0→1): a 3 db H11AA1M opto (GPIO6/7/20) figyeli a relé-kimeneteken a 230V AC-t. STUCK (zóna OFF, de van AC → beragadt relé) → szinkron diag.log + azonnali failsafe; NOAC (zóna ON, de nincs AC) → egyszeri figyelmeztetés + diag.log, failsafe nélkül.
+- **[FIX-ESP-33]** 2026-06-06: **7.8.6** — a failsafe-állapot nullázása (RTC+NVS+logikai) közös `zeroStateForFailsafe()` helperbe került, és már a failsafe DETEKTÁLÁSAKOR lefut (STUCK + 2-relé-LOW ág, a STATE_FAILSAFE beállítása ELŐTT). Így megszűnik a detektálás és a `failSafeMode()` első lefutása közti időablak: failsafe melletti hibás reset SEM állíthatja vissza a reléket. A helper idempotens (cache-alapú NVS).
+- **[FIX-ESP-34]** 2026-06-10: **7.9.0** — OTA per-part CRC32 + újraküldés. A 0xFC part-vége csomag 4 byte CRC32-t (zlib-kompatibilis) hordoz; a fogadó a SPIFFS-írás ELŐTT ellenőrzi, eltérésnél ugyanazt a partot újrakéri (0xF1), max MAX_PART_RETRY-szer, utána abort (0x0F + diag.log). A part-feldolgozás soros lett (a következő partot csak CRC-OK + írás után kérjük), ami kiváltja a korábbi kettős-buffer versenyhibákat is. NINCS visszafelé kompatibilitás: a régi (CRC nélküli, 5 byte-os 0xFC) kliens nem támogatott.
