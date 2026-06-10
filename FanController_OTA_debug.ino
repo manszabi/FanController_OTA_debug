@@ -213,8 +213,15 @@
 // lefut (STUCK + 2-relé-LOW ág, a STATE_FAILSAFE beállítása ELŐTT). Így megszűnik
 // a detektálás és a failSafeMode() első lefutása közti időablak: failsafe melletti
 // hibás reset SEM állíthatja vissza a reléket. A helper idempotens (cache-alapú NVS).
-#define FIRMWARE_VERSION "7.8.6"
-#define FIRMWARE_DATE "2026-06-06"
+// [FIX-ESP-34] 2026-06-10: 7.9.0 — OTA per-part CRC32 + újraküldés. A 0xFC
+// part-vége csomag 4 byte CRC32-t (zlib-kompatibilis) hordoz; a fogadó a SPIFFS-
+// írás ELŐTT ellenőrzi, eltérésnél ugyanazt a partot újrakéri (0xF1), max
+// MAX_PART_RETRY-szer, utána abort (0x0F + diag.log). A part-feldolgozás soros
+// lett (a következő partot csak CRC-OK + írás után kérjük), ami kiváltja a
+// korábbi kettős-buffer versenyhibákat is. NINCS visszafelé kompatibilitás:
+// a régi (CRC nélküli, 5 byte-os 0xFC) kliens nem támogatott.
+#define FIRMWARE_VERSION "7.9.0"
+#define FIRMWARE_DATE "2026-06-10"
 
 // ===================== PINS =====================
 #define RELAY_FAN1 10
@@ -311,7 +318,6 @@ static bool otaDeviceConnected = false;
 static bool otaSendMode = false;
 static bool otaSendSize = true;
 static bool otaWriteFile = false;
-static bool otaRequest = false;
 static int otaWriteLen1 = 0, otaWriteLen2 = 0;
 static bool otaCurrentBuf = true;
 static int otaParts = 0, otaCur = 0, otaMTU = 0;
@@ -319,6 +325,16 @@ static int otaMode = OTA_NORMAL_MODE;
 unsigned long otaReceivedBytes = 0, otaTotalBytes = 0;
 unsigned long otaLedTimer = 0;
 bool otaLedState = false;
+
+// [FIX-ESP-34] Per-part CRC32 + újraküldés. A 0xFC part-vége csomag mostantól
+// 4 byte CRC32-t (zlib-kompatibilis) is hordoz a part hasznos adatára. A fogadó
+// a SPIFFS-írás ELŐTT ellenőrzi; eltérésnél NEM ír, hanem ugyanazt a partot
+// újrakéri (0xF1 az aktuális indexszel), legfeljebb MAX_PART_RETRY-szer, utána
+// abort. A folyamat soros: a következő partot csak a CRC-OK + írás után kérjük,
+// ami egyúttal kiváltja a korábbi kettős-buffer versenyhibákat ([FIX-ESP-1/5]).
+static uint32_t otaExpectedCrc = 0;    // a 0xFC-ben kapott elvárt CRC32
+static int otaPartRetry = 0;           // aktuális part újraküldés-számláló
+static const int MAX_PART_RETRY = 5;   // ennyi sikertelen CRC után abort
 
 // [MOD-1] Új globálisok: nemblokkoló reboot várakozáshoz
 bool otaPendingReboot = false;
@@ -526,6 +542,21 @@ bool otaIsRunning() {
 }
 
 // ===================== OTA HELPERS =====================
+// [FIX-ESP-34] zlib-kompatibilis CRC32 (poly 0xEDB88320, init/xorout 0xFFFFFFFF).
+// Pontosan egyezik a Python zlib.crc32()-vel. Tábla nélküli (bitenkénti), ami
+// 16 KB-os partra is csak pár ms — OTA közben elhanyagolható. Önteszt bootkor:
+// crc32_zlib("123456789", 9) == 0xCBF43926.
+static uint32_t crc32_zlib(const uint8_t* p, size_t n) {
+  uint32_t crc = 0xFFFFFFFF;
+  for (size_t i = 0; i < n; i++) {
+    crc ^= p[i];
+    for (int k = 0; k < 8; k++) {
+      crc = (crc >> 1) ^ (0xEDB88320u & (~(crc & 1u) + 1u));
+    }
+  }
+  return ~crc;
+}
+
 static void rebootEspWithReason(String reason) {
   DBG("Rebooting...");
   delay(1000);
@@ -591,7 +622,7 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
     otaCurrentBuf = true;
     otaWriteLen1 = 0;
     otaWriteLen2 = 0;
-    otaRequest = false;
+    otaPartRetry = 0;
 
     // Töröljük a részben felírt update.bin-t
     if (fs.exists(path)) {
@@ -952,7 +983,7 @@ class MyServerCallbacks : public BLEServerCallbacks {
       otaReceivedBytes = 0;
       otaTotalBytes = 0;
       otaWriteFile = false;
-      otaRequest = false;
+      otaPartRetry = 0;
       otaParts = 0;
       otaCur = 0;
       otaMTU = 0;
@@ -1134,16 +1165,25 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
     } else if (pData[0] == 0xFC) {
       OTA_DBG_P("0xFC part=");
       Serial.println((pData[3] * 256) + pData[4]);
-      if (otaCurrentBuf) {
-        otaWriteLen1 = (pData[1] * 256) + pData[2];
+      // [FIX-ESP-34] A 0xFC mostantól 9 byte: [0xFC][len_hi][len_lo][pos_hi][pos_lo]
+      // [crc24][crc16][crc8][crc0]. CRC nélkül (rövid csomag) nem dolgozzuk fel —
+      // a BLE link-réteg integritást garantál, így ez csak védelem a csonkolás ellen.
+      if (len < 9) {
+        DBG("0xFC too short (no CRC) — ignored");
       } else {
-        otaWriteLen2 = (pData[1] * 256) + pData[2];
-      }
-      otaCurrentBuf = !otaCurrentBuf;
-      otaCur = (pData[3] * 256) + pData[4];
-      otaWriteFile = true;
-      if (otaCur < otaParts - 1) {
-        otaRequest = true;
+        if (otaCurrentBuf) {
+          otaWriteLen1 = (pData[1] * 256) + pData[2];
+        } else {
+          otaWriteLen2 = (pData[1] * 256) + pData[2];
+        }
+        otaExpectedCrc = ((uint32_t)pData[5] << 24) | ((uint32_t)pData[6] << 16) |
+                         ((uint32_t)pData[7] << 8) | ((uint32_t)pData[8]);
+        otaCurrentBuf = !otaCurrentBuf;
+        otaCur = (pData[3] * 256) + pData[4];
+        otaWriteFile = true;
+        // [FIX-ESP-34] A következő partot NEM itt kérjük — előbb a CRC-t
+        // ellenőrizzük az otaLoop()-ban; csak CRC-OK + sikeres írás után jön a
+        // 0xF1 a következő indexszel (soros, versenymentes folyamat).
       }
 
     } else if (pData[0] == 0xFD) {
@@ -1568,6 +1608,17 @@ void setup() {
   Serial.print(resetReasonStr(resetReason));
   Serial.println(F(")"));
   Serial.println(F("===================================="));
+
+  // [FIX-ESP-34] CRC32 önteszt: a firmware és a Python küldő (zlib.crc32) CSAK
+  // akkor egyezik, ha ez az ismert vektor stimmel. Eltérésnél minden OTA part
+  // CRC-hibásnak látszana → inkább itt, bootkor derüljön ki.
+  {
+    const uint8_t tv[] = { '1','2','3','4','5','6','7','8','9' };
+    uint32_t got = crc32_zlib(tv, 9);
+    Serial.print(F("CRC32 self-test: 0x"));
+    Serial.print(got, HEX);
+    Serial.println(got == 0xCBF43926 ? F(" OK") : F(" FAIL!"));
+  }
 
   // [FIX-ESP-14] 2026-05-30: Reset ok mentése a diag naplóba – DE CSAK ha
   // tényleg hiba volt. A várt reseteket (POWERON, DEEPSLEEP-ből ébredés, és a
@@ -2613,44 +2664,87 @@ void otaLoop() {
 
     case OTA_UPDATE_MODE:
 
-      if (otaRequest) {
-        uint8_t rq[] = { 0xF1, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
-        pOtaTx->setValue(rq, 3);
-        pOtaTx->notify();
-        delay(50);
-        otaRequest = false;
-      }
-
-      // [FIX-ESP-1] 2026-05-24: otaWriteFile ellenőrzés ELŐRE hozva.
+      // [FIX-ESP-34] Soros, CRC-ellenőrzött part-feldolgozás. Ha megérkezett egy
+      // teljes part (otaWriteFile), előbb CRC32-t ellenőrzünk a most kitöltött
+      // bufferen, és CSAK egyezésnél írunk SPIFFS-re + kérjük a következő partot.
+      // Eltérésnél ugyanazt a partot kérjük újra (max MAX_PART_RETRY), utána abort.
+      // Így nincs átfedés a fogadás és az írás között (a régi kettős-buffer
+      // versenyhibák — [FIX-ESP-1/5] — megszűnnek), és minden part integritása
+      // garantált a SPIFFS-re írás előtt.
       if (otaWriteFile) {
-        if (!otaCurrentBuf) {
-          otaWriteBinary(FLASH, "/update.bin", otaBuf1, otaWriteLen1);
-        } else {
-          otaWriteBinary(FLASH, "/update.bin", otaBuf2, otaWriteLen2);
-        }
-      }
+        // A most kitöltött buffer az otaCurrentBuf MOSTANI (a 0xFC-ben már
+        // megfordított) állapotával ellentétes: !otaCurrentBuf → buf1, egyébként buf2.
+        uint8_t* buf = (!otaCurrentBuf) ? otaBuf1 : otaBuf2;
+        int      blen = (!otaCurrentBuf) ? otaWriteLen1 : otaWriteLen2;
 
-      // [FIX-ESP-5] 2026-05-24: A valódi hiba végre megtalálva!
-      // A SPIFFS write (otaWriteBinary) több 100ms-ig fut, eközben a BLE
-      // callback szálon megérkezhet a 42. (utolsó) part 0xFC-je is, ami
-      // újra otaWriteFile=true-t állít, otaCur=41-et és otaCurrentBuf-ot
-      // megfordít. AMIKOR az otaWriteBinary befejeződik, otaWriteFile=false
-      // lesz (az ELŐZŐ 41. part írása után), és a következő loop sorban
-      // az otaCur+1==otaParts feltétel azonnal teljesül — INSTALL_MODE-ba
-      // váltunk, MIELŐTT a 42. part otaWriteFile=true újra kiváltaná az
-      // írást. Eredmény: 1728 byte örökre elveszik.
-      //
-      // A javítás: a módváltást CSAK akkor engedjük, ha otaWriteFile FALSE,
-      // ÉS az otaCurrentBuf a megfelelő (kiindulási) állapotban van.
-      // Ha még otaWriteFile=true, vagy a flag éppen most lett beállítva
-      // (még írás vár), akkor maradjunk UPDATE_MODE-ban — a következő
-      // loop kör elvégzi az írást, és csak utána lép át.
-      if (otaCur + 1 == otaParts && !otaWriteFile) {
-        uint8_t com[] = { 0xF2, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
-        pOtaTx->setValue(com, 3);
-        pOtaTx->notify();
-        delay(50);
-        otaMode = OTA_INSTALL_MODE;
+        uint32_t crc = crc32_zlib(buf, (size_t)blen);
+
+        if (crc != otaExpectedCrc) {
+          // --- CRC HIBA: ugyanezt a partot újrakérjük ---
+          otaWriteFile = false;
+          otaPartRetry++;
+          DBG_P("OTA CRC fail part=");
+          Serial.print(otaCur);
+          DBG_P(" got=0x"); Serial.print(crc, HEX);
+          DBG_P(" exp=0x"); Serial.print(otaExpectedCrc, HEX);
+          DBG_P(" try="); Serial.println(otaPartRetry);
+
+          if (otaPartRetry <= MAX_PART_RETRY) {
+            char e[72];
+            snprintf(e, sizeof(e), "[ota] crc retry part=%d try=%d", otaCur, otaPartRetry);
+            diagLog(e);
+            uint8_t rq[] = { 0xF1, (uint8_t)(otaCur / 256), (uint8_t)(otaCur % 256) };
+            pOtaTx->setValue(rq, 3);
+            pOtaTx->notify();
+            delay(50);
+          } else {
+            // túl sok sikertelen kísérlet → OTA abort
+            DBG("OTA abort: too many CRC retries");
+            char e[72];
+            snprintf(e, sizeof(e), "[ota] crc abort part=%d", otaCur);
+            diagLog(e);
+            if (pOtaTx) {
+              String result = String((char)0x0F) + "ERR: CRC fail part " + String(otaCur);
+              pOtaTx->setValue(result.c_str());
+              pOtaTx->notify();
+              delay(200);
+            }
+            if (FLASH.exists("/update.bin")) FLASH.remove("/update.bin");
+            otaMode = OTA_NORMAL_MODE;
+            otaReceivedBytes = 0;
+            otaTotalBytes = 0;
+            otaParts = 0;
+            otaCur = 0;
+            otaMTU = 0;
+            otaCurrentBuf = true;
+            otaWriteLen1 = 0;
+            otaWriteLen2 = 0;
+            otaPartRetry = 0;
+          }
+          break;
+        }
+
+        // --- CRC OK: kiírás SPIFFS-re, retry-számláló nullázása ---
+        otaPartRetry = 0;
+        otaWriteBinary(FLASH, "/update.bin", buf, blen);  // otaWriteFile=false, otaReceivedBytes += blen
+
+        // otaWriteBinary SPIFFS-megtelésnél NORMAL_MODE-ba állít → ne folytassuk.
+        if (otaMode != OTA_UPDATE_MODE) break;
+
+        if (otaCur + 1 == otaParts) {
+          // utolsó part kész → INSTALL_MODE
+          uint8_t com[] = { 0xF2, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
+          pOtaTx->setValue(com, 3);
+          pOtaTx->notify();
+          delay(50);
+          otaMode = OTA_INSTALL_MODE;
+        } else {
+          // következő part kérése
+          uint8_t rq[] = { 0xF1, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
+          pOtaTx->setValue(rq, 3);
+          pOtaTx->notify();
+          delay(50);
+        }
       }
 
       break;
@@ -2661,32 +2755,9 @@ void otaLoop() {
     //     A ciklus a várakozás alatt visszatér, és nem blokkolja a főciklust
     case OTA_INSTALL_MODE:
 
-      // [FIX-ESP-1c] 2026-05-24: A buffer logika HELYES iránya:
-      // A 0xFC callback-ban:
-      //   if (otaCurrentBuf) { otaWriteLen1 = ...; }   ← buf1-be írtunk
-      //   else               { otaWriteLen2 = ...; }   ← buf2-be írtunk
-      //   otaCurrentBuf = !otaCurrentBuf;              ← MEGFORDUL
-      //
-      // Ezért az írás idejére:
-      //   - otaCurrentBuf most TRUE  → az imént FALSE volt → buf2-be írtunk → buf2-t kell írni
-      //   - otaCurrentBuf most FALSE → az imént TRUE  volt → buf1-be írtunk → buf1-t kell írni
-      //
-      // Tehát a HELYES logika (ugyanaz mint az UPDATE_MODE-ban):
-      //   if (!otaCurrentBuf) write(buf1, len1);   ← most FALSE → buf1
-      //   else                write(buf2, len2);   ← most TRUE  → buf2
-      //
-      // Az előző FIX-ESP-1b verzió fordítva volt → a rossz (üres) buffert írta,
-      // és az otaReceivedBytes nem növekedett, mert a write SPIFFS-en lefutott
-      // ugyan, de 0 byte-tal vagy hibás adattal.
-      // A duplikáció nem probléma, mert otaWriteBinary() beállítja
-      // otaWriteFile = false-ra a sikeres írás után.
-      if (otaWriteFile) {
-        if (!otaCurrentBuf) {
-          otaWriteBinary(FLASH, "/update.bin", otaBuf1, otaWriteLen1);
-        } else {
-          otaWriteBinary(FLASH, "/update.bin", otaBuf2, otaWriteLen2);
-        }
-      }
+      // [FIX-ESP-34] Az utolsó part kiírása már az UPDATE_MODE-ban megtörtént
+      // (soros, CRC-ellenőrzött folyamat), ezért itt MÁR NINCS buffer-írás —
+      // az INSTALL_MODE csak megvárja a teljességet és elindítja a telepítést.
 
       // Ha várakozás folyamatban van, csak az időt ellenőrizzük
       if (otaInstallWaiting) {
