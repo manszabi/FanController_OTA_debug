@@ -3,7 +3,7 @@
 ESP32-C3 alapú **háromfokozatú ventilátor- és görgővezérlő**, BLE-n keresztül
 irányítható, OTA firmware-frissítéssel, és beépített diagnosztikai naplóval.
 
-**Aktuális firmware verzió:** `7.9.0` (2026-06-10)
+**Aktuális firmware verzió:** `7.9.1` (2026-06-10)
 
 ---
 
@@ -402,6 +402,7 @@ A teljes, részletes változás-napló ([MOD-x] / [FIX-ESP-x] bejegyzésekkel):
 
 | Verzió | Változás |
 | --- | --- |
+| **7.9.1** | OTA-indítás determinisztikus: a `0xFF`-re a fogadó azonnal `0xF1 0`-t kér (a régi `0xAA`-handshake helyett) → megszűnik a „stuck part 0" verseny. Csonka `0xFC` (<9 byte) → part-újrakérés a csendes eldobás helyett. Közös `otaAbort()` helper. |
 | **7.9.0** | OTA per-part **CRC32 + újraküldés**: a `0xFC` 4 byte zlib-CRC32-t hordoz, a fogadó a SPIFFS-írás előtt ellenőrzi, hibánál ugyanazt a partot újrakéri (max 5×, utána abort + diag.log). Soros part-feldolgozás (a kettős-buffer versenyhibák kiváltva), CRC32 boot-önteszt. Régi (CRC nélküli) küldő nem támogatott. |
 | **7.8.6** | A failsafe-állapot nullázása (RTC+NVS+logikai) közös `zeroStateForFailsafe()` helperbe került, és már a failsafe **detektálásakor** lefut (a `STATE_FAILSAFE` beállítása előtt). Megszűnik a detektálás és a `failSafeMode()` első lefutása közti időablak → failsafe melletti hibás reset sem állítja vissza a reléket. |
 | **7.8.5** | `FAN_SENSE` bekapcsolva (`FAN_SENSE_ENABLE` 0→1): a 3× H11AA1M opto figyeli a relé-kimeneteken a 230V AC-t. STUCK → szinkron `diag.log` + azonnali failsafe; NOAC → egyszeri figyelmeztetés + `diag.log` (failsafe nélkül). |
