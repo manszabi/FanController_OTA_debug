@@ -1,7 +1,4 @@
-// FanController_OTA_debug — Xiao ESP32-C3 ventilátor- és görgővezérlő (BLE + OTA).
-// A részletes változás-történet ([MOD-x] / [FIX-ESP-x] bejegyzések) a
-// verhistory.md fájlban található.
-
+// FanController_OTA_debug — XIAO ESP32-C3/C6 ventilator+gorgo vezerlo (BLE+OTA). Valtozasok: verhistory.md
 #include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -19,19 +16,9 @@
 #include <Preferences.h>  // [FIX-ESP-21] NVS fokozat-mentés áramtalanításra
 
 // ===================== DEBUG CONFIG =====================
-// [FIX-ESP-9] 2026-05-24: OTA_DEBUG kikapcsolva production módra.
-// Ez eltávolítja a sok ezer "OTA packet" sor és "FS write" log üzenetet
-// soros monitoron, amely OTA közben elárasztotta a logot.
-// DEBUG=1 marad általános üzenetekhez, OTA_DEBUG=0 csak a per-csomag spam-et tiltja.
 #define DEBUG 1
 #define OTA_DEBUG 0
-// [FIX-ESP-28] Boot-diagnosztika kiírása (RTC + NVS + diag.log) a soros monitorra.
-// Ha a program stabil, állítsd 0-ra a kikapcsoláshoz.
 #define BOOT_DIAG 1
-// [FIX-ESP-29] A fan relé KIMENET figyelése (3x H11AA1M optocsatoló). 1 = bekapcsolva
-// (mintavétel + STUCK failsafe + NOAC figyelmeztetés), 0 = teljesen kikapcsolva
-// (a kód NEM fordul bele, a GPIO6/7/20 lábak szabadon maradnak). A bekötés
-// részletei és a finomhangoló kapcsolók a PINS szekció után találhatók.
 #define FAN_SENSE_ENABLE 1
 
 #if DEBUG
@@ -51,16 +38,11 @@
 #endif
 
 // ===================== VERSION INFO =====================
-// A verziónkénti változás-történet a verhistory.md fájlban található.
 #define FIRMWARE_VERSION "7.11.0"
 #define FIRMWARE_DATE "2026-06-14"
 
 // ===================== PINS =====================
-// [FIX-ESP-36] Cél-chip szerinti pinkiosztás. A CONFIG_IDF_TARGET_ESP32C6 makrót
-// az ESP32 core a választott board/FQBN alapján állítja (XIAO_ESP32C6 → C6).
-// Alapértelmezett (egyébként) a Seeed XIAO ESP32-C3 kiosztás.
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
-// --- Seeed XIAO ESP32-C6 ---
 #define RELAY_FAN1 23
 #define RELAY_FAN2 22
 #define RELAY_FAN3 21
@@ -70,7 +52,6 @@
 #define LED_YELLOW 0
 #define LED_RED 16
 #else
-// --- Seeed XIAO ESP32-C3 (alapértelmezett) ---
 #define RELAY_FAN1 10
 #define RELAY_FAN2 9
 #define RELAY_FAN3 8
@@ -83,26 +64,11 @@
 
 // ===================== FAN RELÉ KIMENET FIGYELÉS (H11AA1M) =====================
 #if FAN_SENSE_ENABLE
-// [FIX-ESP-29] 2026-06-06: 3 db H11AA1M AC-bemenetű optocsatoló figyeli a fan
-// relék KIMENETÉT (van-e 230V AC a terhelésen). A H11AA1M bemenetén antiparallel
-// LED-pár van, ezért az AC MINDKÉT félhullámán vezet — KIVÉVE a nullátmenetek
-// körül, ahol a LED-áram a küszöb alá esik. Emiatt a fototranzisztor kimenete
-// 230V AC jelenlétében NEM folyamatosan alacsony, hanem ~100 Hz-cel (50 Hz
-// hálózat → félhullámonként egyszer) rövid időre HIGH-ra ugrik a nullátmeneteknél.
-//   → Egyetlen digitalRead NEM elég. Idő-ABLAKOT figyelünk: ha az utóbbi
-//     AC_SENSE_WINDOW_MS-ben (> 1 hálózati periódus) LÁTTUNK aktív (LOW) mintát,
-//     akkor VAN AC a relé kimenetén. Folyamatos HIGH az ablakban → NINCS AC.
-// Bekötés (feltételezett): opto fototranzisztor kollektor → MCU láb (belső
-// pullup), emitter → GND. Így VAN AC → vezet az opto → LOW (aktív). Ha a hardver
-// fordított logikájú, állítsd a FAN_SENSE_ACTIVE_LOW-t 0-ra.
-// [FIX-ESP-36] Cél-chip szerinti kimenet-figyelő pinek (lásd a PINS szekciót).
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
-// --- Seeed XIAO ESP32-C6 ---
 #define FAN1_SENSE_PIN 19    // D? — Fan1 (RELAY_FAN1) kimenetének figyelése
 #define FAN2_SENSE_PIN 20    // D? — Fan2 (RELAY_FAN2) kimenetének figyelése
 #define FAN3_SENSE_PIN 18    // D? — Fan3 (RELAY_FAN3) kimenetének figyelése
 #else
-// --- Seeed XIAO ESP32-C3 (alapértelmezett) ---
 #define FAN1_SENSE_PIN 6    // D4 — Fan1 (RELAY_FAN1) kimenetének figyelése
 #define FAN2_SENSE_PIN 7    // D5 — Fan2 (RELAY_FAN2) kimenetének figyelése
 #define FAN3_SENSE_PIN 20   // D7 — Fan3 (RELAY_FAN3) kimenetének figyelése
@@ -111,21 +77,10 @@
 
 const uint8_t fanSensePins[3] = { FAN1_SENSE_PIN, FAN2_SENSE_PIN, FAN3_SENSE_PIN };
 
-// Az ablak > 1 hálózati periódus (20 ms @ 50 Hz), hogy a nullátmenetek körüli
-// rövid (max ~1-2 ms) HIGH réseket áthidaljuk. 40 ms bőven biztonságos.
 const unsigned long AC_SENSE_WINDOW_MS = 40;
-// A szűrt (élő / nincs-AC) állapotnak ennyi ideig STABILAN kell állnia a váltáshoz.
 const unsigned long AC_SENSE_DEBOUNCE_MS = 80;
-// Relé-parancs (zónaváltás / engedélyezés-tiltás) után ennyi ideig NEM értékelünk
-// eltérést — ráhagyás a relé mechanikai zárására + az opto-detektálás késleltetésére.
 const unsigned long FAN_SENSE_GRACE_MS = 1500;
-// NOAC (zóna ON, de nincs AC) esetén ennyi ideig FOLYAMATOSAN fenn kell állnia az
-// eltérésnek, mielőtt FIGYELMEZTETÜNK (tranziens-szűrés). A STUCK NEM ezt használja.
 const unsigned long FAN_SENSE_MISMATCH_CONFIRM_MS = 1000;
-// Aszimmetrikus reakció a két eltérés-irányra:
-//   STUCK (zóna OFF, de VAN AC → beragadt/hegedt relé): AZONNALI failsafe + diag.log.
-//   NOAC  (zóna ON, de NINCS AC → relé/biztosíték/fan/háló hiba): csak debounce-olt
-//         EGYSZERI figyelmeztetés + diag.log, NINCS failsafe (a rendszer fut tovább).
 #define FAN_SENSE_FAILSAFE_ON_STUCK 1   // STUCK → STATE_FAILSAFE (azonnal, türelmi idő után)
 #define FAN_SENSE_WARN_ON_NOAC      1   // NOAC  → figyelmeztetés + diag.log (failsafe NÉLKÜL)
 
@@ -146,25 +101,13 @@ bool fanNoacWarned[3] = { false, false, false };      // NOAC: figyelmeztettünk
 #define OTA_UPDATE_MODE 1
 #define OTA_INSTALL_MODE 2
 
-// [FIX-ESP-38] Egyetlen OTA-buffer, DINAMIKUSAN allokálva (csak OTA alatt). A
-// [FIX-ESP-34/35] óta a part-feldolgozás soros (egyszerre egy part van úton), így
-// a régi kettős, statikus 2×16 KB buffer felesleges volt. Most: normál üzemben
-// 0 KB, OTA-kezdéskor (0xFF) malloc(OTA_BUF_SIZE), telepítéskor/abortkor/disconnectkor
-// free → ~16 KB-tal kevesebb RAM normál működésben, ~16 KB-tal OTA alatt is.
 static const size_t OTA_BUF_SIZE = 16384;
 static uint8_t* otaBuf = nullptr;
 
 // ===================== DIAG LOG (FIX-ESP-14) =====================
-// [FIX-ESP-14] 2026-05-30: SPIFFS-be mentett diagnosztikai napló, hogy BLE-n
-// keresztül (DIAG? parancs) újraindulás után le lehessen kérdezni MI volt a
-// reset oka (pl. BROWNOUT), és hogy mikor fogyott ki a memória.
 #define DIAG_LOG_PATH "/diag.log"
 const size_t DIAG_LOG_MAX = 512;              // a napló max. mérete (byte) – kicsi
 const uint32_t LOW_HEAP_THRESHOLD = 20000;    // ez alatt "kevés memória" bejegyzés
-// [FIX-ESP-14c] 20 byte: ez az alapértelmezett BLE MTU (23) melletti biztos
-// notify-méret (MTU-3). Így akkor is sértetlen a napló, ha a kliens nem
-// egyezteti fel az MTU-t. A napló kicsi (<=512 B), így 20-as darabokkal is
-// gyors a letöltés (~26 csomag).
 const size_t DIAG_CHUNK_SIZE = 20;            // BLE-n egy csomagban küldött byte
 const unsigned long DIAG_CHUNK_INTERVAL = 25; // ms két csomag között (BLE flow control)
 
@@ -186,28 +129,17 @@ unsigned long otaReceivedBytes = 0, otaTotalBytes = 0;
 unsigned long otaLedTimer = 0;
 bool otaLedState = false;
 
-// [FIX-ESP-34] Per-part CRC32 + újraküldés. A 0xFC part-vége csomag mostantól
-// 4 byte CRC32-t (zlib-kompatibilis) is hordoz a part hasznos adatára. A fogadó
-// a SPIFFS-írás ELŐTT ellenőrzi; eltérésnél NEM ír, hanem ugyanazt a partot
-// újrakéri (0xF1 az aktuális indexszel), legfeljebb MAX_PART_RETRY-szer, utána
-// abort. A folyamat soros: a következő partot csak a CRC-OK + írás után kérjük,
-// ami egyúttal kiváltja a korábbi kettős-buffer versenyhibákat ([FIX-ESP-1/5]).
 static uint32_t otaExpectedCrc = 0;    // a 0xFC-ben kapott elvárt CRC32
 static int otaPartRetry = 0;           // aktuális part újraküldés-számláló
 static const int MAX_PART_RETRY = 5;   // ennyi sikertelen CRC után abort
-// [FIX-ESP-35] Az éppen várt part indexe (amit utoljára kértünk 0xF1-gyel). Csonka
-// 0xFC vagy újrakérés esetén ezt kérjük újra, így nincs „elveszett part" stall.
 static int otaExpectedPart = 0;
 
-// [MOD-1] Új globálisok: nemblokkoló reboot várakozáshoz
 bool otaPendingReboot = false;
 unsigned long otaRebootAt = 0;
 
-// [MOD-2] Új globálisok: nemblokkoló install várakozáshoz
 bool otaInstallWaiting = false;
 unsigned long otaInstallWaitUntil = 0;
 
-// [FIX-ESP-14] Diag napló BLE-streameléshez (nemblokkoló állapotgép)
 volatile bool diagRequested = false;       // DIAG? parancs érkezett
 volatile bool diagClearRequested = false;  // DIAGCLR parancs érkezett
 bool diagStreaming = false;                // épp streamelünk-e
@@ -261,7 +193,6 @@ const unsigned long BLE_ZONE_TIMEOUT_MS = 720000;
 
 // ===================== BLE AUTH =====================
 #define BLE_AUTH_PIN "123456"
-// [MOD-5] Fordítási idejű figyelmeztetés, ha a PIN üres
 #if !defined(BLE_AUTH_PIN)
 #warning "BLE_AUTH_PIN is empty – authentication disabled!"
 #endif
@@ -309,41 +240,23 @@ unsigned long lastPrint3 = 0;
 const unsigned long printInterval = 30000;
 bool wasActive = false;
 
-// Boot magic
 RTC_NOINIT_ATTR uint32_t bootMagic;
 #define BOOT_MAGIC 0xDEADBEEF
 
-// [FIX-ESP-20] Az utolsó aktív ventilátor-fokozat mentése RTC memóriába, hogy
-// BROWNOUT/UNKNOWN reset után vissza lehessen állítani. Külön magic védi az
-// érvényességet, mert a BROWNOUT az RTC memóriát is törölheti — ilyenkor a
-// magic nem egyezik, és nem állítunk vissza szemét értéket.
 RTC_NOINIT_ATTR uint32_t savedZoneMagic;
 RTC_NOINIT_ATTR int savedZone;
 #define SAVED_ZONE_MAGIC 0xFA11A5EE
 
-// [FIX-ESP-30] A görgő (edzőgörgő) állapotának mentése is RTC-be, külön magic-cel.
-// Eddig csak a fokozat (savedZone) volt perzisztens; a rollerActive sima RAM-bool
-// volt, így minden hibás reset után FELTÉTEL NÉLKÜL bekapcsolt a görgő — idle
-// állapotban is váratlan indítást okozva. Most boot után csak akkor áll vissza a
-// görgő, ha tényleg aktív volt (RTC, BROWNOUT-túléléshez NVS fallbackkel).
 RTC_NOINIT_ATTR uint32_t savedRollerMagic;
 RTC_NOINIT_ATTR int savedRoller;       // 1 = aktív volt, 0 = nem
 #define SAVED_ROLLER_MAGIC 0xF0117E55
 
-// [FIX-ESP-21] Hibrid: NVS-be is mentjük a fokozatot, hogy TELJES áramtalanítás
-// után is visszaálljon (az RTC csak resetet él túl, áramtalanítást nem). DE csak
-// akkor írunk NVS-be, ha egy fokozat HOSSZABB IDEIG (NVS_SAVE_STABLE_MS) stabil
-// maradt — így nem írunk a brownout-veszélyes váltási pillanatban, és ritka az
-// írás (flash-kímélő). Az NVS write atomi (kettős buffer), félbeszakadásnál a
-// régi érték marad.
 Preferences fanPrefs;
 int nvsLastSavedZone = -1;             // amit utoljára NVS-be írtunk (cache, hogy ne írjunk feleslegesen)
 int nvsLastSavedRoller = -1;           // [FIX-ESP-30] görgő NVS cache (-1 = nincs mentve)
 unsigned long zoneStableSince = 0;     // mikortól stabil a jelenlegi fokozat
 bool nvsZonePending = false;           // van-e még nem mentett stabil fokozat
 const unsigned long NVS_SAVE_STABLE_MS = 30000;  // 30 mp stabilitás után mentünk
-// [FIX-ESP-27] Force-mentés: sűrű váltogatásnál (ahol sosincs 30s nyugalom) is
-// mentsünk legalább 5 percenként, ha az aktuális fokozat eltér az NVS-ben tárolttól.
 unsigned long lastNvsSaveTime = 0;     // mikor írtunk utoljára NVS-be
 const unsigned long NVS_FORCE_SAVE_MS = 300000;  // 5 perc → kényszerített mentés
 
@@ -405,10 +318,6 @@ bool otaIsRunning() {
 }
 
 // ===================== OTA HELPERS =====================
-// [FIX-ESP-34] zlib-kompatibilis CRC32 (poly 0xEDB88320, init/xorout 0xFFFFFFFF).
-// Pontosan egyezik a Python zlib.crc32()-vel. Tábla nélküli (bitenkénti), ami
-// 16 KB-os partra is csak pár ms — OTA közben elhanyagolható. Önteszt bootkor:
-// crc32_zlib("123456789", 9) == 0xCBF43926.
 static uint32_t crc32_zlib(const uint8_t* p, size_t n) {
   uint32_t crc = 0xFFFFFFFF;
   for (size_t i = 0; i < n; i++) {
@@ -420,9 +329,6 @@ static uint32_t crc32_zlib(const uint8_t* p, size_t n) {
   return ~crc;
 }
 
-// [FIX-ESP-35] OTA megszakítás EGY helyen: hibaüzenet a kliensnek (0x0F) +
-// diag.log + a részleges update.bin törlése + a teljes OTA-állapot visszaállítása
-// NORMAL_MODE-ba. A CRC-retry-túllépés és a csonka 0xFC is ezt hívja (DRY).
 static void otaAbort(const String& msg) {
   DBG_P("OTA abort: ");
   Serial.println(msg);
@@ -456,11 +362,6 @@ static void rebootEspWithReason(String reason) {
 }
 
 static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) {
-  // [FIX-ESP-2] 2026-05-24: Debug logging hozzáadva, hogy lássuk, az írás
-  // egyáltalán meghívódik-e az utolsó partra. Korábban gyanús volt, hogy
-  // az otaReceivedBytes nem éri el otaTotalBytes-t.
-  // [FIX-ESP-9] 2026-05-24: Serial.println most az OTA_DBG makró mögé téve,
-  // hogy production módban (OTA_DEBUG=0) ne spam-eljen.
   OTA_DBG_P("FS write len=");
 #if OTA_DEBUG
   Serial.println(len);
@@ -469,8 +370,6 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
   File file = fs.open(path, FILE_APPEND);
   if (!file) {
     DBG("FS write fail");
-    // [FIX-ESP-3] 2026-05-24: otaWriteFile = false beállítás hibás esetben is,
-    // hogy ne maradjon végtelen ciklusban "csak ír" állapotban.
     otaWriteFile = false;
     return;
   }
@@ -478,31 +377,21 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
   file.close();
   otaWriteFile = false;
   otaReceivedBytes += written;  // [FIX-ESP-4] 2026-05-24: a TÉNYLEGESEN kiírt
-                                // byte-okat számoljuk, nem a kértet — így ha
-                                // SPIFFS részleges write történt, az kiderül.
   OTA_DBG_P("FS write done, total=");
 #if OTA_DEBUG
   Serial.println(otaReceivedBytes);
 #endif
 
-  // [FIX-ESP-10] 2026-05-24: Részleges write detektálása. Ha a SPIFFS megtelt,
-  // a file.write() 0-t vagy a kértnél kevesebbet ír vissza, de hibát nem dob.
-  // Korábban ilyenkor a "total=" ragadva maradt és végtelen "OTA incomplete"
-  // ciklus következett. Most az OTA-t azonnal megszakítjuk és tisztítunk.
   if (written < (size_t)len) {
     DBG_P("SPIFFS full! Wrote ");
     Serial.print(written);
     DBG_P(" of ");
     Serial.print(len);
     DBG_P(" bytes (SPIFFS free: ");
-    // [FIX-ESP-10b] 2026-05-24: fs::FS osztálynak nincs totalBytes()/usedBytes()
-    //  metódusa — ezek a SPIFFSFS-specifikus tagok. FLASH (= SPIFFS) globálist
-    //  használjuk közvetlenül, mert ez az egyetlen filesystem amit használunk.
     Serial.print(FLASH.totalBytes() - FLASH.usedBytes());
     DBG(")");
     DBG("Aborting OTA");
 
-    // OTA állapot visszaállítása NORMAL módba
     otaMode = OTA_NORMAL_MODE;
     otaInstallWaiting = false;
     otaInstallWaitUntil = 0;
@@ -515,13 +404,11 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
     otaPartRetry = 0;
     if (otaBuf) { free(otaBuf); otaBuf = nullptr; }  // [FIX-ESP-38]
 
-    // Töröljük a részben felírt update.bin-t
     if (fs.exists(path)) {
       fs.remove(path);
       DBG("Partial update.bin removed");
     }
 
-    // Visszajelzés a kliensnek (Python oldali), hogy megszakadt
     if (pOtaTx) {
       String result = String((char)0x0F) + "ERR: SPIFFS full";
       pOtaTx->setValue(result.c_str());
@@ -532,7 +419,6 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
 }
 
 void ota_boot_flow() {
-  // 1) Futó és boot partíció lekérdezése
   const esp_partition_t* running = esp_ota_get_running_partition();
   const esp_partition_t* boot = esp_ota_get_boot_partition();
 
@@ -552,7 +438,6 @@ void ota_boot_flow() {
   DBG_P(" address=0x");
   Serial.println(boot->address, HEX);
 
-  // 2) Ha a running != boot → új firmware indult először
   if (running != boot) {
     DBG("New firmware booted FIRST TIME → validating...");
 
@@ -571,7 +456,6 @@ void ota_boot_flow() {
     }
   }
 
-  // 3) OTA state lekérdezése
   esp_ota_img_states_t state;
   esp_err_t st = esp_ota_get_state_partition(running, &state);
 
@@ -616,23 +500,14 @@ void sendOtaResult(String result) {
   delay(200);
 }
 
-// [MOD-1] + [MOD-3] performUpdate: WDT törlés + nemblokkoló reboot várakozás
-// Eredeti: delay(5000) a sendOtaResult() után, ami blokkolta a főciklust
-// Új:      otaPendingReboot = true + otaRebootAt = millis() + 5000
-//          A tényleges reboot az otaLoop() elején fut le, millis() ellenőrzéssel
-// [MOD-3]: esp_task_wdt_delete(NULL) hozzáadva a flash írás előtt,
-//          mert Update.writeStream() hosszú ideig blokkolhat nagy firmware esetén
-
 void performUpdate(Stream& updateSource, size_t updateSize) {
   String result = String((char)0x0F);
 
   DBG("=== OTA DEBUG START ===");
 
-  // 0) WDT kikapcsolás
   DBG("WDT delete (flash write may block)...");
   esp_task_wdt_delete(NULL);
 
-  // 1) Partíciók kiírása
   const esp_partition_t* running = esp_ota_get_running_partition();
   const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
 
@@ -649,14 +524,6 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   DBG_P("updateSize = ");
   Serial.println(updateSize);
 
-  // [FIX-ESP-16] 2026-05-31: magic-byte ellenőrzés az Update.begin() ELŐTT.
-  // Egy érvényes ESP32 app-image első byte-ja 0xE9 (ESP_IMAGE_HEADER_MAGIC).
-  // Ha nem az, az arduino-esp32 Update könyvtár U_AES_DECRYPT_AUTO módban
-  // titkosított image-nek hiszi a binárist, megpróbálja visszafejteni kulcs
-  // nélkül, és a félrevezető "Decryption error"-t dobja az Update.end()-nél.
-  // A valódi ok ilyenkor: ROSSZ fájl lett feltöltve (nem az app .ino.bin,
-  // hanem pl. merged.bin offszettel, .gz tömörített, vagy sérült átvitel).
-  // Itt előre elkapjuk és ÉRTHETŐ hibát adunk a "Decryption error" helyett.
   int magic = updateSource.peek();
   DBG_P("First byte (magic) = 0x");
   Serial.println(magic, HEX);
@@ -678,7 +545,6 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
     return;
   }
 
-  // 2) Update.begin
   DBG("Calling Update.begin()...");
   bool ok = Update.begin(updateSize);
   if (!ok) {
@@ -697,7 +563,6 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
 
   DBG("Update.begin OK");
 
-  // 3) writeStream
   DBG("Calling Update.writeStream...");
   size_t written = Update.writeStream(updateSource);
 
@@ -710,7 +575,6 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
     DBG_P("Got: "); Serial.println(written);
   }
 
-  // 4) Update.end
   DBG("Calling Update.end()...");
   bool endOK = Update.end();
 
@@ -731,7 +595,6 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
     return;
   }
 
-  // 5) isFinished
   DBG_P("Update.isFinished(): ");
   Serial.println(Update.isFinished() ? "true" : "false");
 
@@ -741,11 +604,9 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
 
   DBG("=== OTA DEBUG END ===");
 
-  // 6) WDT vissza
   DBG("WDT add back");
   esp_task_wdt_add(NULL);
 
-  // 7) Eredmény visszaküldése
   result += "Written: " + String(written) + "/" + String(updateSize) + "\n";
   result += "OTA done\n";
 
@@ -759,53 +620,6 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
     rebootEspWithReason("OTA done");
   }
 }
-
-/*
-void performUpdate(Stream& updateSource, size_t updateSize) {
-  String result = String((char)0x0F);
-
-  // [MOD-3] WDT törlése: az Update.writeStream() akár több másodpercig fut,
-  // ami 15s-es timeout esetén is triggerelheti a watchdogot nagy firmwarenél
-  esp_task_wdt_delete(NULL);
-
-
-  if (Update.begin(updateSize)) {
-    size_t written = Update.writeStream(updateSource);
-    OTA_DBG_P("OTA written: ");
-    OTA_DBG(String(written).c_str());
-    result += "Written: " + String(written) + "/" + String(updateSize) + "\n";
-    if (Update.end()) {
-      result += "OTA done: ";
-      if (Update.isFinished()) {
-        result += "OK\n";
-      } else {
-        result += "Not finished\n";
-      }
-    } else {
-      result += "Error: " + String(Update.getError());
-    }
-  } else {
-    result += "No space for OTA";
-  }
-
-  // [FIX-ESP-6] 2026-05-24: WDT visszahelyezése a flash írás után.
-  // Az esp_task_wdt_delete(NULL) eltávolította a fő taskot a WDT listából,
-  // ezért minden további esp_task_wdt_reset() hívás "task not found" hibát
-  // dob a logba végtelenül. Az esp_task_wdt_add(NULL) visszateszi a taskot,
-  // így a reset hívások újra működnek.
-  esp_task_wdt_add(NULL);
-
-  if (otaDeviceConnected) {
-    sendOtaResult(result);
-    // [MOD-1] delay(5000) → nemblokkoló flag alapú várakozás
-    otaPendingReboot = true;
-    otaRebootAt = millis() + 5000;
-  } else {
-    // Ha nincs csatlakozva eszköz, azonnal rebootolhat
-    rebootEspWithReason("OTA done");
-  }
-}
-*/
 
 void updateFromFS(fs::FS& fs) {
   File updateBin = fs.open("/update.bin");
@@ -830,9 +644,6 @@ void updateFromFS(fs::FS& fs) {
     DBG("Removing update.bin");
     fs.remove("/update.bin");
 
-    // [MOD-1] rebootEspWithReason() hívás eltávolítva innen:
-    // a reboot most az otaLoop()-ban történik az otaPendingReboot flag alapján.
-    // Ha performUpdate() azonnal rebootolt (nincs BLE), ide nem jutunk el.
   } else {
     DBG("update.bin not found");
   }
@@ -856,7 +667,6 @@ class MyServerCallbacks : public BLEServerCallbacks {
     bleDisconnectTime = millis();
     DBG("BLE disconnected");
 
-    // [FIX-ESP-14] Ha épp diag naplót streameltünk, zárjuk le tisztán
     if (diagStreaming) {
       if (diagFile) diagFile.close();
       diagStreaming = false;
@@ -1005,7 +815,6 @@ class MyCallbacks : public BLECharacteristicCallbacks {
       Serial.println(rollerCmd);
 
     } else if (val.startsWith("DIAG?")) {
-      // [FIX-ESP-14] Diag napló lekérése (reset ok + lowmem history)
       String correctPin = BLE_AUTH_PIN;
       if (correctPin.length() > 0 && !isAuthenticated) {
         DBG("DIAG rejected (no auth)");
@@ -1017,7 +826,6 @@ class MyCallbacks : public BLECharacteristicCallbacks {
       DBG("Diag log requested");
 
     } else if (val.startsWith("DIAGCLR")) {
-      // [FIX-ESP-14] Diag napló törlése
       String correctPin = BLE_AUTH_PIN;
       if (correctPin.length() > 0 && !isAuthenticated) {
         DBG("DIAGCLR rejected (no auth)");
@@ -1044,8 +852,6 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
     OTA_DBG("OTA packet");
 
     if (pData[0] == 0xFB) {
-      // [FIX-ESP-38] Egy buffer (dinamikus). A base+x korlát-ellenőrzés a heap-
-      // buffer védelme (érvényes framenél sosem lép túl).
       if (otaBuf) {
         int base = pData[1] * otaMTU;
         for (int x = 0; x < len - 2; x++) {
@@ -1056,13 +862,7 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
     } else if (pData[0] == 0xFC) {
       OTA_DBG_P("0xFC part=");
       Serial.println((pData[3] * 256) + pData[4]);
-      // [FIX-ESP-34] A 0xFC mostantól 9 byte: [0xFC][len_hi][len_lo][pos_hi][pos_lo]
-      // [crc24][crc16][crc8][crc0]. CRC nélkül (rövid csomag) nem dolgozzuk fel —
-      // a BLE link-réteg integritást garantál, így ez csak védelem a csonkolás ellen.
       if (len < 9) {
-        // [FIX-ESP-35] Csonka 0xFC (nincs meg a 4 byte CRC) — a part framing sérült.
-        // A BLE link-réteg miatt gyakorlatilag kizárt, de védelemként újrakérjük az
-        // aktuálisan várt partot (retry-limittel), nem hagyjuk csendben elveszni.
         DBG("0xFC too short (no CRC) — re-requesting part");
         otaPartRetry++;
         if (otaPartRetry <= MAX_PART_RETRY && pOtaTx) {
@@ -1078,14 +878,9 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
                          ((uint32_t)pData[7] << 8) | ((uint32_t)pData[8]);
         otaCur = (pData[3] * 256) + pData[4];
         otaWriteFile = true;
-        // [FIX-ESP-34] A következő partot NEM itt kérjük — előbb a CRC-t
-        // ellenőrizzük az otaLoop()-ban; csak CRC-OK + sikeres írás után jön a
-        // 0xF1 a következő indexszel (soros, versenymentes folyamat).
       }
 
     } else if (pData[0] == 0xFD) {
-      // [FIX-ESP-35] Tiszta lap: a régi update.bin törlése. A korábbi 0xAA-alapú
-      // indítás megszűnt — a part-0-t a 0xFF determinisztikusan kéri (lásd lent).
       if (FLASH.exists("/update.bin")) {
         FLASH.remove("/update.bin");
       }
@@ -1099,11 +894,6 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
       DBG_P("OTA size: ");
       Serial.println(otaTotalBytes);
 
-      // [FIX-ESP-11] 2026-05-24: Előzetes méret-ellenőrzés. Ha a SPIFFS-en
-      // nincs elég hely a teljes update.bin-hez, ne is kezdjünk neki — azonnal
-      // hibát küldünk a kliensnek. Régen ez csak menet közben derült ki, és
-      // részlegesen felírt fájlt hagyott maga után. A free space-hez +4KB
-      // tartalék kell (SPIFFS metaadatok, blokk-overhead).
       const uint32_t SPIFFS_OVERHEAD = 4096;
       if (otaTotalBytes + SPIFFS_OVERHEAD > fsFree) {
         DBG("ERR: SPIFFS too small for OTA");
@@ -1119,7 +909,6 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
           delay(200);
         }
 
-        // OTA állapot visszaállítása
         otaMode = OTA_NORMAL_MODE;
         otaTotalBytes = 0;
         otaReceivedBytes = 0;
@@ -1129,13 +918,10 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
     } else if (pData[0] == 0xFF) {
       otaParts = (pData[1] * 256) + pData[2];
       otaMTU = (pData[3] * 256) + pData[4];
-      // [FIX-ESP-35] Tiszta kezdőállapot az új átvitelhez.
       otaCur = 0;
       otaWriteFile = false;
       otaPartRetry = 0;
       otaExpectedPart = 0;
-      // [FIX-ESP-38] OTA-buffer allokálása (csak most, az átvitel idejére). Ha
-      // nincs elég (összefüggő) heap, érthető hibával megszakítjuk — nem indul OTA.
       if (!otaBuf) otaBuf = (uint8_t*)malloc(OTA_BUF_SIZE);
       if (!otaBuf) {
         DBG("OTA abort: malloc fail (no RAM)");
@@ -1144,10 +930,6 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
         otaMode = OTA_UPDATE_MODE;
         DBG_P("OTA parts: ");
         Serial.println(otaParts);
-        // [FIX-ESP-35] A part-0-t ITT, DETERMINISZTIKUSAN kérjük (0xF1 0) — nem a
-        // korábbi 0xAA-handshake-kel, ami a NORMAL_MODE-ban futott és versenyezhetett
-        // a 0xFF beérkezésével ("stuck part 0" rés). Innentől a folyamat tisztán
-        // pull-alapú: minden további partot az otaLoop kér a CRC-OK után.
         if (pOtaTx) {
           uint8_t rq[] = { 0xF1, 0x00, 0x00 };
           pOtaTx->setValue(rq, 3);
@@ -1222,15 +1004,12 @@ void handleMultiClick() {
   if (clicks > 2) {
     DBG("Multi-click → AUTO mode");
 
-    // Vissza automata üzemmódba
     manualMode = false;
     bleEnabled = true;
 
-    // Ventilátor kikapcsolása (kézi módban beállított zóna törlése)
     manualZoneIndex = 0;
     setFanZone(0, SRC_BUTTON);
 
-    // BLE újraindítása, hogy újra fogadjon csatlakozást
     BLEDevice::startAdvertising();
     DBG("Manual mode OFF, BLE advertising restarted");
     return;
@@ -1258,8 +1037,6 @@ void otaInitService(BLEServer* server) {
   pAdvertising->addServiceUUID(OTA_SERVICE_UUID);
 }
 
-// [FIX-ESP-13] 2026-05-30: Olvasható string a reset okhoz, hogy a soros
-// monitoron / PC oldalon azonnal látsszon, mi indította újra az eszközt.
 static const char* resetReasonStr(esp_reset_reason_t r) {
   switch (r) {
     case ESP_RST_POWERON:  return "POWERON";
@@ -1276,12 +1053,7 @@ static const char* resetReasonStr(esp_reset_reason_t r) {
   }
 }
 
-// [FIX-ESP-14] 2026-05-30: Egy sor hozzáfűzése a diag naplóhoz. Heap-mentes
-// (csak stack puffer, nincs String → nincs fragmentáció). Csak akkor írunk
-// flash-t, ha tényleg kell (lásd a hívási helyeket: csak hibás reset / lowmem).
-// Ha a fájl túllépi a DIAG_LOG_MAX-ot, megtartjuk az utolsó felét.
 void diagLog(const char* line) {
-  // Méret-cap: csak akkor írjuk újra a fájlt, ha tényleg túl nagy
   if (FLASH.exists(DIAG_LOG_PATH)) {
     File f = FLASH.open(DIAG_LOG_PATH, FILE_READ);
     if (f) {
@@ -1291,7 +1063,6 @@ void diagLog(const char* line) {
         f.seek(sz - sizeof(tmp));
         int n = f.read(tmp, sizeof(tmp));
         f.close();
-        // az első (részleges) sort eldobjuk, hogy ép sorral kezdődjön
         int start = 0;
         for (int i = 0; i < n; i++) {
           if (tmp[i] == '\n') { start = i + 1; break; }
@@ -1317,10 +1088,6 @@ void diagLog(const char* line) {
   }
 }
 
-// [FIX-ESP-28] 2026-06-02: Boot-diagnosztika a soros monitorra: az RTC_NOINIT,
-// az NVS és a diag.log állapota egyetlen, jól olvasható blokkban. Csak fejlesztéskor
-// kell — BOOT_DIAG=0 esetén a függvény üres (nem fordul bele kód). A boot folyamat
-// végén hívjuk, amikor az nvsLastSavedZone már betöltve és a friss [boot] sor benne.
 void printBootDiag() {
 #if BOOT_DIAG
   bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
@@ -1333,7 +1100,6 @@ void printBootDiag() {
   Serial.println(F("BOOT DIAG (RTC / NVS / diag.log)"));
   Serial.println(F("===================================="));
 
-  // --- RTC_NOINIT ---
   Serial.print(F("RTC magic: 0x"));
   Serial.print(savedZoneMagic, HEX);
   Serial.print(F(" ("));
@@ -1341,27 +1107,23 @@ void printBootDiag() {
   Serial.println(F(")"));
   Serial.print(F("RTC savedZone: "));
   Serial.println(savedZone);
-  // [FIX-ESP-30] görgő RTC állapot
   Serial.print(F("RTC savedRoller: "));
   Serial.print(savedRoller);
   Serial.print(F(" ("));
   Serial.print(rollerRtcValid ? F("valid") : F("invalid"));
   Serial.println(F(")"));
 
-  // --- NVS ---
   Serial.print(F("NVS zone: "));
   Serial.print(nvsLastSavedZone);
   Serial.print(F(" ("));
   Serial.print(nvsValid ? F("valid") : F("none/invalid"));
   Serial.println(F(")"));
-  // [FIX-ESP-30] görgő NVS állapot
   Serial.print(F("NVS roller: "));
   Serial.print(nvsLastSavedRoller);
   Serial.print(F(" ("));
   Serial.print((nvsLastSavedRoller == 0 || nvsLastSavedRoller == 1) ? F("valid") : F("none/invalid"));
   Serial.println(F(")"));
 
-  // --- diag.log ---
   Serial.println(F("--- diag.log ---"));
   if (FLASH.exists(DIAG_LOG_PATH)) {
     File df = FLASH.open(DIAG_LOG_PATH, FILE_READ);
@@ -1383,20 +1145,9 @@ void printBootDiag() {
 #endif
 }
 
-// [FIX-ESP-14] 2026-05-30: A DIAG? / DIAGCLR parancsok nemblokkoló kiszolgálása.
-// A BLE onWrite callback CSAK flag-et állít (diagRequested/diagClearRequested),
-// a tényleges SPIFFS olvasás és a darabolt notify itt, a fő loopban történik –
-// így nem blokkoljuk a BLE stack taskját és nem árasztjuk el a notify buffert.
-//
-// Protokoll a fan karakterisztikán (ffe1), válasz a kliensnek:
-//   0x02 "DIAG_BEGIN"   – stream kezdete
-//   <nyers napló byte-ok ... DIAG_CHUNK_SIZE-os darabokban>
-//   0x04 "DIAG_END"     – stream vége
-// A kliens a 0x02/0x04 vezérlőjelek közti byte-okat fűzi össze.
 void handleDiagRequest() {
   if (!pCharacteristic) return;
 
-  // Törlés kérés
   if (diagClearRequested) {
     diagClearRequested = false;
     if (FLASH.exists(DIAG_LOG_PATH)) FLASH.remove(DIAG_LOG_PATH);
@@ -1406,7 +1157,6 @@ void handleDiagRequest() {
     return;
   }
 
-  // Stream indítása
   if (diagRequested && !diagStreaming) {
     diagRequested = false;
     diagFile = FLASH.open(DIAG_LOG_PATH, FILE_READ);
@@ -1418,7 +1168,6 @@ void handleDiagRequest() {
     return;
   }
 
-  // Darabok küldése (időzítve, hogy ne floodoljuk a BLE-t)
   if (diagStreaming) {
     unsigned long now = millis();
     if (now - diagLastChunk < DIAG_CHUNK_INTERVAL) return;
@@ -1448,11 +1197,6 @@ void setup() {
   delay(100);
 
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
-  // [FIX-ESP-37] XIAO ESP32-C6: KÜLSŐ antenna kiválasztása. A panelen RF-kapcsoló
-  // van: a GPIO3 (WIFI_ENABLE) LOW engedélyezi a kapcsoló tápját, a GPIO14
-  // (WIFI_ANT_CONFIG) HIGH = külső antenna (LOW = beépített). A rádió (BLE)
-  // indítása ELŐTT kell beállítani. C3-on ez a blokk bele sem fordul, így a C3
-  // működése változatlan. (WIFI_ENABLE/WIFI_ANT_CONFIG a XIAO_ESP32C6 variánsból.)
   pinMode(WIFI_ENABLE, OUTPUT);
   digitalWrite(WIFI_ENABLE, LOW);          // RF switch control aktiválás
   delay(100);
@@ -1462,7 +1206,6 @@ void setup() {
 
   ota_boot_flow();
 
-  // [MOD-5] Futásidejű ellenőrzés – ha PIN üres, Serial warningot dob
   static_assert(sizeof(BLE_AUTH_PIN) > 1, "BLE_AUTH_PIN is empty!");
 
   DBG("Boot");
@@ -1471,12 +1214,6 @@ void setup() {
     DBG("SPIFFS mount fail");
   }
 
-  // [FIX-ESP-7] 2026-05-24: Sikeres OTA után az updateFromFS() törli az
-  // update.bin-t, de ha a reboot előtt megszakadt valami (pl. áramkimaradás),
-  // a fájl ott marad SPIFFS-ben. Boot után detektáljuk és töröljük, hogy
-  // a következő OTA tiszta állapotból induljon. Ezenkívül néha az is
-  // előfordulhat, hogy update.bin könyvtárként marad ott ("update.bin is dir"
-  // log üzenet) — ezt is kezeljük.
   if (SPIFFS.exists("/update.bin")) {
     File f = SPIFFS.open("/update.bin");
     if (f) {
@@ -1498,30 +1235,10 @@ void setup() {
     .trigger_panic = true
   };
 
-  // [FIX-ESP-8] 2026-05-24: Boot után az "esp_task_wdt_init: TWDT already
-  // initialized" hibát az okozza, hogy soft reset után a WDT állapota
-  // megmaradhat. Az esp_task_wdt_deinit() biztosítja, hogy tiszta állapotból
-  // induljunk az esp_task_wdt_init() előtt. Hibát ignoráljuk, mert ha
-  // nem volt inicializálva, a deinit nem kritikus.
   esp_task_wdt_deinit();
   esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL);
 
-  // [FIX-ESP-13] 2026-05-30: A korábbi logika az esp_sleep_get_wakeup_cause() +
-  // RTC_NOINIT bootMagic kombinációval próbálta megkülönböztetni a power-on-t a
-  // soft reset-től. PROBLÉMA: relék/ventilátorok kapcsolásakor (induktív
-  // terhelés, bekapcsolási áramlökés) vagy BLE adás közbeni áramcsúcsoknál
-  // BROWNOUT reset történhet, ami az ESP32-C3-on törölheti az RTC memóriát →
-  // bootMagic != BOOT_MAGIC → a kód "power-on"-nak hitte és DEEP SLEEP-be ment.
-  // Innen jött a "30-40 perc után váratlanul leáll, mintha deep sleepbe menne"
-  // tünet: a brownout reset után az eszköz elaludt ahelyett, hogy újraindult
-  // volna, és csak gombnyomásra ébredt fel.
-  //
-  // MEGOLDÁS: esp_reset_reason() használata, ami megbízhatóan megadja a reset
-  // okát. Csak VALÓDI hidegindítás (POWERON) esetén alszunk el és várunk
-  // gombnyomásra. Deep sleepből csak gombbal ébredünk. Minden HIBÁS reset
-  // (BROWNOUT, PANIC, WDT, SW) esetén ÚJRAINDULUNK és folytatjuk a normál
-  // működést (BLE advertising újraindul) — az eszköz nem marad "halott".
   esp_reset_reason_t resetReason = esp_reset_reason();
   lastBootResetReason = resetReason;  // [FIX-ESP-19] globális mentés
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
@@ -1542,9 +1259,6 @@ void setup() {
   Serial.println(F(")"));
   Serial.println(F("===================================="));
 
-  // [FIX-ESP-34] CRC32 önteszt: a firmware és a Python küldő (zlib.crc32) CSAK
-  // akkor egyezik, ha ez az ismert vektor stimmel. Eltérésnél minden OTA part
-  // CRC-hibásnak látszana → inkább itt, bootkor derüljön ki.
   {
     const uint8_t tv[] = { '1','2','3','4','5','6','7','8','9' };
     uint32_t got = crc32_zlib(tv, 9);
@@ -1553,10 +1267,6 @@ void setup() {
     Serial.println(got == 0xCBF43926 ? F(" OK") : F(" FAIL!"));
   }
 
-  // [FIX-ESP-14] 2026-05-30: Reset ok mentése a diag naplóba – DE CSAK ha
-  // tényleg hiba volt. A várt reseteket (POWERON, DEEPSLEEP-ből ébredés, és a
-  // szándékos SW reset pl. OTA után) NEM naplózzuk, így nem koptatjuk a flash-t
-  // és nem zavarjuk az OTA-t. Csak PANIC/WDT/BROWNOUT/EXT/SDIO/UNKNOWN kerül be.
   if (resetReason != ESP_RST_POWERON &&
       resetReason != ESP_RST_DEEPSLEEP &&
       resetReason != ESP_RST_SW) {
@@ -1568,7 +1278,6 @@ void setup() {
   }
 
   if (resetReason == ESP_RST_DEEPSLEEP) {
-    // Deep sleepből ébredtünk – csak gombnyomásra induljon el a rendszer
     if (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO) {
       DBG("Wake: button");
     } else {
@@ -1580,7 +1289,6 @@ void setup() {
       esp_deep_sleep_start();
     }
   } else if (resetReason == ESP_RST_POWERON) {
-    // Valódi hidegindítás (tápra dugás) → alvás, gombnyomásra indul
     DBG("Power-on → sleep (wait for button)");
     Serial.flush();
     delay(100);
@@ -1588,9 +1296,6 @@ void setup() {
     esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
     esp_deep_sleep_start();
   } else {
-    // BROWNOUT / PANIC / WDT / SW reset → hibából való helyreállás:
-    // FOLYTATJUK a normál működést (NEM alszunk el), így az eszköz
-    // automatikusan újraindul és újra elérhető lesz BLE-n.
     DBG("Fault/SW reset → resuming normal operation");
   }
 
@@ -1604,11 +1309,9 @@ void setup() {
   pinMode(LED_RED, OUTPUT);
 
 #if FAN_SENSE_ENABLE
-  // [FIX-ESP-29] H11AA1M kimenetek: belső pullup, opto vezetésekor (van AC) LOW.
   pinMode(FAN1_SENSE_PIN, INPUT_PULLUP);
   pinMode(FAN2_SENSE_PIN, INPUT_PULLUP);
   pinMode(FAN3_SENSE_PIN, INPUT_PULLUP);
-  // Boot után adjunk extra időt a beállásra, mielőtt eltérést értékelnénk.
   fanSenseGraceUntil = millis() + 3000;
 #endif
 
@@ -1665,37 +1368,17 @@ void setup() {
   DBG_P("Free heap: ");
   Serial.println(ESP.getFreeHeap());
 
-  // [FIX-ESP-19] 2026-06-01: BROWNOUT/UNKNOWN/WDT reset után görgő bekapcs.
-  // Ha az eszköz BROWNOUT miatt resetelt (a 230V AC ventilátor terhelésétől),
-  // vagy WDT/UNKNOWN reset történt, boot után azonnal bekapcsoljuk a görgőt +
-  // relékre, hogy az eszköz működőképes maradjon és ne legyen "halott" állapot.
-  // [FIX-ESP-20] 2026-06-01: az összeomlás előtti fokozat (RTC-ből, magic-cel
-  // védve) is visszaáll, ha érvényes. Így a ventilátor ott folytatja, ahol az
-  // áramkimaradás megszakította.
-  // [FIX-ESP-21] NVS-ben tárolt fokozat beolvasása (áramtalanítás-túlélés).
-  // Ez a cache-t (nvsLastSavedZone) is feltölti, így később nem írunk feleslegesen.
-  // [FIX-ESP-26] Default -1 (NEM 0!), hogy a "nincs NVS mentés" eset
-  // megkülönböztethető legyen a "mentett 0" esettől. Így ha sosem mentett
-  // az eszköz, az NVS érvénytelennek számít, és működik a fallback LEVEL:2.
   fanPrefs.begin("fan", true);  // read-only
   nvsLastSavedZone = fanPrefs.getInt("zone", -1);
   nvsLastSavedRoller = fanPrefs.getInt("roller", -1);  // [FIX-ESP-30] görgő (-1 = nincs)
   fanPrefs.end();
 
-  // [FIX-ESP-22] 2026-06-01: a WDT reseteket is bevesszük a visszaállításba.
-  // Három WDT-fajta van az ESP-IDF-ben: INT_WDT (interrupt watchdog),
-  // TASK_WDT (task watchdog), WDT (általános). Ha bármelyik miatt resetel
-  // miközben járt a ventilátor, a görgő + fokozat is visszaáll.
   if (lastBootResetReason == ESP_RST_BROWNOUT ||
       lastBootResetReason == ESP_RST_UNKNOWN ||
       lastBootResetReason == ESP_RST_INT_WDT ||
       lastBootResetReason == ESP_RST_TASK_WDT ||
       lastBootResetReason == ESP_RST_WDT) {
 
-    // [FIX-ESP-30] A görgő (edzőgörgő) korábbi állapotának meghatározása. Az RTC
-    // a friss forrás (minden váltáskor íródik); a BROWNOUT viszont törölheti az
-    // RTC-t, ezért NVS fallback. Csak akkor indítjuk újra a görgőt + ventilátort,
-    // ha tényleg AKTÍV volt — így idle állapotból nincs váratlan indítás.
     bool rollerRtcValid = (savedRollerMagic == SAVED_ROLLER_MAGIC &&
                            (savedRoller == 0 || savedRoller == 1));
     bool rollerNvsValid = (nvsLastSavedRoller == 0 || nvsLastSavedRoller == 1);
@@ -1705,8 +1388,6 @@ void setup() {
     else                     rollerWas = -1;                   // ismeretlen → nem indítunk
 
     if (rollerWas != 1) {
-      // A görgő nem volt aktív (vagy nincs róla érvényes rekord) → idle volt,
-      // nem indítunk magától semmit. A relék kikapcsolva maradnak.
       DBG("Boot after error reset, roller was NOT active → staying idle");
     } else {
       DBG("Boot after BROWNOUT/UNKNOWN/WDT, roller was active → resuming");
@@ -1714,13 +1395,6 @@ void setup() {
       delay(100);
       activateRoller();
 
-      // [FIX-ESP-30] Zóna-visszaállítás RTC-elsőbbséggel (a korábbi "magasabb
-      // zóna" heurisztika helyett). Az RTC mindig a LEGFRISSEBB (minden váltásnál
-      // íródik), az NVS késik (30s/5perc) — így lefelé váltás után a max() elavult
-      // magas zónát hozott vissza. Prioritás:
-      // - RTC jó (0-3)  → RTC érték (a friss)
-      // - RTC hibás, NVS jó (0-3) → NVS érték (brownout-fallback)
-      // - Mindkettő hibás → fallback LEVEL:2 (a görgő járt, ne maradjon 0-n)
       bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
       bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
       int restoreZone;
@@ -1742,7 +1416,6 @@ void setup() {
     }
   }
 
-  // [FIX-ESP-28] Boot-diagnosztika kiírása (RTC + NVS + diag.log). BOOT_DIAG=0 → üres.
   printBootDiag();
 
   digitalWrite(LED_YELLOW, LOW);
@@ -1759,19 +1432,13 @@ void loop() {
   }
 
 #if FAN_SENSE_ENABLE
-  // [FIX-ESP-29] H11AA1M mintavétel: MINDEN loop-iterációban (nem a 20 ms-es
-  // checkInterval-hez kötve), mert az AC-ablakhoz gyors mintavétel kell. OTA
-  // alatt szünetel (a fanok állapota úgyis befagy, és nem írunk flash-t).
   if (!otaIsRunning()) monitorFanRelays();
 #endif
 
   otaLoop();
 
-  // [FIX-ESP-14] Diag napló BLE-kiszolgálása (csak ha nem fut OTA)
   if (!otaIsRunning()) handleDiagRequest();
 
-  // [FIX-ESP-21] Stabil fokozat mentése NVS-be (áramtalanítás-túléléshez).
-  // OTA közben ne írjunk flash-t, nehogy zavarja az update-et.
   if (!otaIsRunning()) saveZoneToNvsIfStable();
 }
 
@@ -1794,10 +1461,6 @@ void stateMachineStep() {
 void normalMode() {
   unsigned long nowNormalMode = millis();
 
-  // [FIX-ESP-31] A relé-kimenet ellenőrzések (2+ relé LOW; és FAN_SENSE esetén a
-  // mért 230V AC eltérés) a fokozatváltás UTÁNRA kerültek — lásd a függvény végén,
-  // a handleZoneChange()/handleBleCommand() után —, hogy a frissen beállított
-  // relé-állapotot értékeljék. A failsafe-logika és a küszöb VÁLTOZATLAN.
   failStartSet = false;
   failStart = 0;
 
@@ -1839,25 +1502,15 @@ void normalMode() {
     DBG_P("To sleep (min): ");
     Serial.println(remainingMs / 60000);
 
-    // [FIX-ESP-13] 2026-05-30: Heap monitorozás. Ha a "Free heap" 30-40 perc
-    // alatt folyamatosan csökken, memóriaszivárgás van (pl. BLE újracsatlakozási
-    // ciklusok). A "min" a valaha mért legkisebb szabad heap — ha ez vészesen
-    // alacsony, az heap-kifogyás miatti összeomlást (és resetet) okozhat.
     DBG_P("Free heap: ");
     Serial.print(ESP.getFreeHeap());
     DBG_P(" / min: ");
     Serial.println(ESP.getMinFreeHeap());
   }
 
-  // [FIX-ESP-14] 2026-05-30: Alacsony memória detektálás. Ha a szabad heap a
-  // küszöb alá esik, egyszer bejegyezzük a diag naplóba (BLE-n lekérdezhető).
-  // Hiszterézissel: csak akkor logolunk újra, ha közben visszaállt a heap.
   static bool lowHeapLogged = false;
   uint32_t freeHeapNow = ESP.getFreeHeap();
   if (freeHeapNow < LOW_HEAP_THRESHOLD) {
-    // [FIX-ESP-14c] Ne írjunk a naplóba, amíg épp streameljük (a diagFile
-    // nyitva van olvasásra) – különben ugyanazt a fájlt csonkolnánk/írnánk.
-    // A lowHeapLogged false marad, így a stream befejeztével rögzül a bejegyzés.
     if (!lowHeapLogged && !diagStreaming) {
       char e[72];
       snprintf(e, sizeof(e), "[lowmem] heap=%u min=%u t=%lus",
@@ -1931,11 +1584,6 @@ void normalMode() {
   handleZoneChange();
   handleBleCommand();
 
-  // [FIX-ESP-31] Relé vezérlő-kimenet ellenőrzése a fokozatváltás (handleZoneChange)
-  // + BLE-parancs UTÁN, hogy a frissen beállított relé-állapotot lássa (eddig a
-  // normalMode() elején, a váltás ELŐTT futott). A logika és a küszöb VÁLTOZATLAN:
-  // ha 2+ ventilátor-relé egyszerre aktív (LOW), az tiltott/beragadt állapot →
-  // azonnali STATE_FAILSAFE (és a függvény hátralévő része kimarad, mint eddig).
   int f1 = digitalRead(RELAY_FAN1);
   int f2 = digitalRead(RELAY_FAN2);
   int f3 = digitalRead(RELAY_FAN3);
@@ -1947,10 +1595,6 @@ void normalMode() {
   }
 
 #if FAN_SENSE_ENABLE
-  // [FIX-ESP-29] A mért relé-kimenetek (230V AC jelenléte) összevetése az elvárt
-  // állapottal. STUCK esetén STATE_FAILSAFE. A handleZoneChange/handleBleCommand
-  // után fut, hogy a friss currentZone/relaysEnabled állapottal dolgozzon
-  // (+ FAN_SENSE_GRACE_MS türelmi idő a kapcsolási tranziensre).
   checkFanRelayMismatch();
   if (currentState == STATE_FAILSAFE) return;
 #endif
@@ -1958,15 +1602,6 @@ void normalMode() {
   yield();
 }
 
-// [FIX-ESP-33] A failsafe-állapot perzisztens nullázása EGY helyen. A failsafe
-// DETEKTÁLÁSAKOR hívjuk (a STATE_FAILSAFE beállítása ELŐTT), így egy közvetlenül
-// utána bekövetkező hibás reset (akár BROWNOUT, ami az RTC-t is törli) SEM
-// állíthatja vissza a reléket — megszűnik a detektálás és a failSafeMode() első
-// lefutása közti időablak. A failSafeMode() belépőjéből is hívjuk (idempotens
-// biztosíték). Nullázza: (a) a logikai állapotot (currentZone, rollerActive,
-// pending-ek), (b) az RTC-t (savedZone/savedRoller=0, érvényes magic → boot 'idle'),
-// (c) az NVS-t (brownout-túlélés). NVS-t csak akkor ír, ha tényleg változott
-// (cache-alapú, flash-kímélő), és nem OTA közben.
 void zeroStateForFailsafe() {
   portENTER_CRITICAL(&zoneMux);
   currentZone = 0;
@@ -1981,9 +1616,6 @@ void zeroStateForFailsafe() {
   rollerActive = false;
   nvsZonePending = false;
 
-  // NVS perzisztens nullázás — a kritikus szekción KÍVÜL. Csak ha tényleg eltér
-  // (a cache 0-tól), így a kétszeri hívás (detektálás + failSafeMode belépő) nem
-  // ír feleslegesen flash-t.
   if (!otaIsRunning() && (nvsLastSavedZone != 0 || nvsLastSavedRoller != 0)) {
     fanPrefs.begin("fan", false);
     fanPrefs.putInt("zone", 0);
@@ -2000,8 +1632,6 @@ void failSafeMode() {
     failStart = millis();
     failStartSet = true;
 
-    // [FIX-ESP-30b]/[FIX-ESP-33] Idempotens biztosíték: ha a failsafe detektálásakor
-    // már megtörtént a nullázás, itt (a cache miatt) már nem ír újra NVS-t.
     zeroStateForFailsafe();
     DBG("FAILSAFE entry → roller+fan state zeroed (RTC+NVS)");
   }
@@ -2133,8 +1763,6 @@ void setFanZone(int zone, CommandSource source) {
 void handleZoneChange() {
   unsigned long nowhandleZoneChange = millis();
 
-  // [MOD] zoneChangeStart és pendingZone kiolvasása kritikus szekción belül,
-  // összhangban azzal ahogy setFanZone() írja őket
   unsigned long localZoneChangeStart;
   int localPendingZone;
 
@@ -2147,20 +1775,16 @@ void handleZoneChange() {
   localPendingZone = pendingZone;
   portEXIT_CRITICAL(&zoneMux);
 
-  // Időellenőrzés már a lokális másolattal, szekción kívül
   if (nowhandleZoneChange >= localZoneChangeStart) {
     if (nowhandleZoneChange - localZoneChangeStart < RELAY_SWITCH_DELAY_MS) {
       return;
     }
   }
 
-  // Relay váltás és állapot frissítés
   portENTER_CRITICAL(&zoneMux);
 
   currentZone = localPendingZone;
 
-  // [FIX-ESP-20] Aktuális fokozat mentése RTC-be (magic-cel védve), hogy egy
-  // esetleges BROWNOUT/UNKNOWN reset után visszaállítható legyen.
   savedZone = localPendingZone;
   savedZoneMagic = SAVED_ZONE_MAGIC;
 
@@ -2177,15 +1801,11 @@ void handleZoneChange() {
   portEXIT_CRITICAL(&zoneMux);
 
 #if FAN_SENSE_ENABLE
-  // [FIX-ESP-29] Új relé-állapot → türelmi idő, és az eltérés-számlálók nullázása,
-  // hogy a relé zárása + opto-detektálás késleltetése ne okozzon téves failsafe-et.
   fanSenseGraceUntil = nowhandleZoneChange + FAN_SENSE_GRACE_MS;
   fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
   fanNoacWarned[0] = fanNoacWarned[1] = fanNoacWarned[2] = false;
 #endif
 
-  // [FIX-ESP-21] Új fokozat → indul a stabilitás-számláló. Ha ez a fokozat
-  // NVS_SAVE_STABLE_MS ideig megmarad, a saveZoneToNvsIfStable() lementi NVS-be.
   zoneStableSince = nowhandleZoneChange;
   nvsZonePending = true;
 
@@ -2197,21 +1817,9 @@ void handleZoneChange() {
   }
 }
 
-// [FIX-ESP-21] NVS mentés CSAK ha a jelenlegi fokozat hosszabb ideig stabil.
-// A loop()-ból hívjuk. Így a brownout-veszélyes váltási pillanatban NEM írunk
-// flash-t, és ritka az írás (csak tartós beállításnál egyszer). Áramtalanítás
-// után innen áll vissza a fokozat (az RTC-t csak reset éli túl, áramtalanítást
-// nem). Csak akkor írunk, ha tényleg változott az NVS-ben tárolt értékhez képest.
-// [FIX-ESP-27] Két ok a mentésre:
-//   1) STABIL: a fokozat 30s-ig nem változott (nvsZonePending) — normál eset.
-//   2) FORCE: 5 perce nem mentettünk, és az aktuális fokozat eltér az NVS-től.
-//      Így sűrű váltogatásnál (ahol sosincs 30s nyugalom) is megőrződik a
-//      fokozat teljes áramtalanításra — de legfeljebb 5 percenként (flash-kímélő).
 void saveZoneToNvsIfStable() {
   unsigned long now = millis();
 
-  // [FIX-ESP-30] A currentZone-t a zoneMux kritikus szekcióban olvassuk, összhangban
-  // azzal, ahogy a handleZoneChange() írja (konzisztens olvasás).
   int z;
   portENTER_CRITICAL(&zoneMux);
   z = currentZone;
@@ -2222,8 +1830,6 @@ void saveZoneToNvsIfStable() {
   bool forceSave  = (now - lastNvsSaveTime >= NVS_FORCE_SAVE_MS) && (z != nvsLastSavedZone);
   if (stableSave) nvsZonePending = false;  // a stabil-pending elintézve, nem pörgünk rá
 
-  // [FIX-ESP-30] A görgő állapotát is itt mentjük (loop()-ból, a kapcsolási
-  // áramlökés pillanatától távol), ha eltér az NVS-ben tárolttól.
   bool zoneNeedsWrite   = (stableSave || forceSave) && (z != nvsLastSavedZone);
   bool rollerNeedsWrite = (rollerNow != nvsLastSavedRoller);
 
@@ -2254,14 +1860,6 @@ void saveZoneToNvsIfStable() {
 
 // ===================== FAN RELÉ KIMENET FIGYELÉS (H11AA1M) =====================
 #if FAN_SENSE_ENABLE
-// [FIX-ESP-29] A 3 H11AA1M kimenet mintavételezése + AC-tudatos szűrése. A
-// loop()-ból, MINDEN iterációban hívjuk. Csak a fanLineLive[] szűrt állapotot
-// frissíti (+ Serial log állapotváltáskor); az elvárt állapottal való összevetés
-// és a failsafe a checkFanRelayMismatch()-ben (csak NORMAL módban) történik.
-//
-// AC jelenlétében az opto kimenete az idő ~80-90%-ában LOW, a nullátmenetek
-// körül rövid HIGH résekkel. Ezért: "aktív minta" = LOW. Az állapot akkor ÉLŐ,
-// ha az utóbbi AC_SENSE_WINDOW_MS-ben volt LOW minta (a HIGH réseket áthidalja).
 void monitorFanRelays() {
   unsigned long now = millis();
 
@@ -2278,11 +1876,9 @@ void monitorFanRelays() {
       fanSenseSeen[i] = true;
     }
 
-    // Nyers, ablakozott élő-állapot: láttunk-e aktív (LOW) mintát az ablakon belül.
     bool rawLive = fanSenseSeen[i] &&
                    ((unsigned long)(now - fanSenseLastActive[i]) < AC_SENSE_WINDOW_MS);
 
-    // Debounce: csak akkor frissítjük a szűrt állapotot, ha a nyers tartósan eltér.
     if (rawLive != fanLineLive[i]) {
       if (fanSenseChangeSince[i] == 0) fanSenseChangeSince[i] = now;
       if ((unsigned long)(now - fanSenseChangeSince[i]) >= AC_SENSE_DEBOUNCE_MS) {
@@ -2298,24 +1894,12 @@ void monitorFanRelays() {
   }
 }
 
-// [FIX-ESP-29] Az aktuálisan MÉRT kimenet-állapot összevetése az ELVÁRTtal.
-// Csak NORMAL módban, a relé-parancs utáni türelmi idő (FAN_SENSE_GRACE_MS) után.
-// ASZIMMETRIKUS reakció a két eltérés-irányra (a felhasználó kérése szerint):
-//   STUCK (zóna OFF, de VAN AC → beragadt relé): AZONNALI failsafe + figyelmeztetés
-//         + diag.log. A diag.log SZINKRON, a STATE_FAILSAFE beállítása ELŐTT íródik
-//         (f.close() → flush), így a failsafe-be lépés nem szakítja meg a naplózást.
-//   NOAC  (zóna ON, de NINCS AC → relé/biztosíték/fan/háló hiba): debounce-olt
-//         (FAN_SENSE_MISMATCH_CONFIRM_MS) EGYSZERI figyelmeztetés + diag.log, NINCS
-//         failsafe — a rendszer fut tovább. A latch (fanNoacWarned) megakadályozza
-//         a spam-et; az eltérés megszűntével újraélesedik.
 void checkFanRelayMismatch() {
   unsigned long now = millis();
 
-  // Relé-parancs utáni türelmi idő alatt egyik irányt sem értékeljük.
   bool inGrace = ((long)(fanSenseGraceUntil - now) > 0);
 
   for (int i = 0; i < 3; i++) {
-    // Egy fan akkor kapna AC-t, ha a tápengedély (RELAY_EN) aktív ÉS ez a zóna jár.
     bool expectedLive = relaysEnabled && (currentZone == (i + 1));
     bool live = fanLineLive[i];
 
@@ -2323,14 +1907,11 @@ void checkFanRelayMismatch() {
     bool noac  = (expectedLive && !live);   // ON-nak kéne, de NINCS AC
 
 #if FAN_SENSE_FAILSAFE_ON_STUCK
-    // --- STUCK: azonnali failsafe (a fanLineLive már 40ms ablak + 80ms debounce-olt) ---
     if (stuck && !inGrace) {
       DBG_P("FAILSAFE: Fan");
       Serial.print(i + 1);
       Serial.println(F(" beragadt (van AC, de OFF) -> FAILSAFE"));
 
-      // ELŐBB a diag.log (szinkron flush, a VALÓDI zónával), CSAK UTÁNA a nullázás
-      // és a failsafe-be lépés.
       if (!diagStreaming) {
         char e[80];
         snprintf(e, sizeof(e), "[fanrelay] Fan%d STUCK exp=%d live=%d zone=%d t=%lus",
@@ -2346,7 +1927,6 @@ void checkFanRelayMismatch() {
 #endif
 
 #if FAN_SENSE_WARN_ON_NOAC
-    // --- NOAC: debounce-olt EGYSZERI figyelmeztetés + diag.log, NINCS failsafe ---
     if (noac && !inGrace) {
       if (fanMismatchSince[i] == 0) fanMismatchSince[i] = now;
       if (!fanNoacWarned[i] &&
@@ -2365,7 +1945,6 @@ void checkFanRelayMismatch() {
         fanNoacWarned[i] = true;  // egyszer figyelmeztetünk, amíg fennáll
       }
     } else {
-      // Nincs NOAC eltérés (vagy türelmi idő) → számláló + latch újraélesítése.
       fanMismatchSince[i] = 0;
       fanNoacWarned[i] = false;
     }
@@ -2378,9 +1957,6 @@ void checkFanRelayMismatch() {
 void activateRoller() {
   digitalWrite(RELAY_ROLLER, LOW);
   rollerActive = true;
-  // [FIX-ESP-30] RTC mentés (magic-cel védve), hogy hibás reset után tudjuk,
-  // a görgő aktív volt-e. Az NVS-be a saveZoneToNvsIfStable() menti a loop()-ból
-  // (flash-kímélő, és nem a bekapcsolási áramlökés pillanatában).
   savedRoller = 1;
   savedRollerMagic = SAVED_ROLLER_MAGIC;
   DBG("Roller ON");
@@ -2405,7 +1981,6 @@ void enableRelays() {
   delay(10);
   relaysEnabled = true;
 #if FAN_SENSE_ENABLE
-  // [FIX-ESP-29] tápengedély váltott → türelmi idő az eltérés-figyelésnek
   fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
   fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
   fanNoacWarned[0] = fanNoacWarned[1] = fanNoacWarned[2] = false;
@@ -2423,7 +1998,6 @@ void disableRelays() {
   delay(10);
   relaysEnabled = false;
 #if FAN_SENSE_ENABLE
-  // [FIX-ESP-29] tápengedély váltott → türelmi idő az eltérés-figyelésnek
   fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
   fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
   fanNoacWarned[0] = fanNoacWarned[1] = fanNoacWarned[2] = false;
@@ -2500,9 +2074,6 @@ void enterDeepSleep(const char* reason) {
   Serial.println(reason);
   Serial.println(F("===================================="));
 
-  // [FIX-ESP-15] 2026-05-30: Honnan indult a deep sleep, a diag naplóba is.
-  // Így teszteléskor megkülönböztethető a SZÁNDÉKOS alvás (gomb / tétlenség /
-  // failsafe) a brownout/panik miatti "leállástól". Heap-mentes (stack puffer).
   {
     char e[64];
     snprintf(e, sizeof(e), "[sleep] src=%s heap=%u t=%lus",
@@ -2545,14 +2116,10 @@ void enterDeepSleep(const char* reason) {
 void otaLoop() {
   if (!pOtaTx || !pOtaRx) return;
 
-  // [MOD-1] Nemblokkoló reboot várakozás
-  // Eredeti: performUpdate()-ban delay(5000), blokkolta a főciklust
-  // Új: flag + millis() ellenőrzés itt, a főciklus folytatódhat közben
   if (otaPendingReboot && millis() >= otaRebootAt) {
     rebootEspWithReason("OTA done");
   }
 
-  // Gyors LED váltakozás OTA alatt
   if (otaMode != OTA_NORMAL_MODE) {
     unsigned long now = millis();
     if (now - otaLedTimer >= 50) {
@@ -2567,8 +2134,6 @@ void otaLoop() {
 
     case OTA_NORMAL_MODE:
       if (otaDeviceConnected) {
-        // [FIX-ESP-35] A 0xAA „transfer mode" jel megszűnt — az átvitelt a 0xFF
-        // indítja determinisztikusan (0xF1 0). Itt már csak a flash-méret válasz fut.
         if (otaSendSize) {
           unsigned long x = FLASH.totalBytes();
           unsigned long y = FLASH.usedBytes();
@@ -2591,16 +2156,7 @@ void otaLoop() {
 
     case OTA_UPDATE_MODE:
 
-      // [FIX-ESP-34] Soros, CRC-ellenőrzött part-feldolgozás. Ha megérkezett egy
-      // teljes part (otaWriteFile), előbb CRC32-t ellenőrzünk a most kitöltött
-      // bufferen, és CSAK egyezésnél írunk SPIFFS-re + kérjük a következő partot.
-      // Eltérésnél ugyanazt a partot kérjük újra (max MAX_PART_RETRY), utána abort.
-      // Így nincs átfedés a fogadás és az írás között (a régi kettős-buffer
-      // versenyhibák — [FIX-ESP-1/5] — megszűnnek), és minden part integritása
-      // garantált a SPIFFS-re írás előtt.
       if (otaWriteFile) {
-        // [FIX-ESP-38] Egyetlen, dinamikusan allokált buffer. Ha valamiért nincs
-        // (nem fordulhat elő érvényes folyamatban), nem dolgozunk fel.
         if (!otaBuf) { otaWriteFile = false; break; }
         uint8_t* buf = otaBuf;
         int      blen = otaWriteLen;
@@ -2608,7 +2164,6 @@ void otaLoop() {
         uint32_t crc = crc32_zlib(buf, (size_t)blen);
 
         if (crc != otaExpectedCrc) {
-          // --- CRC HIBA: ugyanezt a partot újrakérjük ---
           otaWriteFile = false;
           otaPartRetry++;
           DBG_P("OTA CRC fail part=");
@@ -2627,32 +2182,24 @@ void otaLoop() {
             pOtaTx->notify();
             delay(50);
           } else {
-            // [FIX-ESP-35] túl sok sikertelen kísérlet → OTA abort (közös helper)
             otaAbort("CRC fail part " + String(otaCur));
           }
           break;
         }
 
-        // --- CRC OK: kiírás SPIFFS-re, retry-számláló nullázása ---
         otaPartRetry = 0;
         otaWriteBinary(FLASH, "/update.bin", buf, blen);  // otaWriteFile=false, otaReceivedBytes += blen
 
-        // otaWriteBinary SPIFFS-megtelésnél NORMAL_MODE-ba állít → ne folytassuk.
         if (otaMode != OTA_UPDATE_MODE) break;
 
         if (otaCur + 1 == otaParts) {
-          // utolsó part kész → INSTALL_MODE
           uint8_t com[] = { 0xF2, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
           pOtaTx->setValue(com, 3);
           pOtaTx->notify();
           delay(50);
-          // [FIX-ESP-38] Minden part kiírva → a buffer már nem kell. Felszabadítjuk
-          // a telepítés (Update.writeStream flash-művelet) ELŐTT, hogy a 16 KB a
-          // memóriaigényes flash-íráshoz rendelkezésre álljon.
           if (otaBuf) { free(otaBuf); otaBuf = nullptr; }
           otaMode = OTA_INSTALL_MODE;
         } else {
-          // következő part kérése
           otaExpectedPart = otaCur + 1;  // [FIX-ESP-35] ezt várjuk vissza
           uint8_t rq[] = { 0xF1, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
           pOtaTx->setValue(rq, 3);
@@ -2663,36 +2210,17 @@ void otaLoop() {
 
       break;
 
-    // [MOD-2] OTA_INSTALL_MODE: mindkét delay(2000) kiváltva nemblokkoló várakozással
-    // Eredeti: delay(2000) a "file complete" és az "incomplete" ágban is
-    // Új: otaInstallWaiting flag + otaInstallWaitUntil millis() időbélyeg
-    //     A ciklus a várakozás alatt visszatér, és nem blokkolja a főciklust
     case OTA_INSTALL_MODE:
 
-      // [FIX-ESP-34] Az utolsó part kiírása már az UPDATE_MODE-ban megtörtént
-      // (soros, CRC-ellenőrzött folyamat), ezért itt MÁR NINCS buffer-írás —
-      // az INSTALL_MODE csak megvárja a teljességet és elindítja a telepítést.
-
-      // Ha várakozás folyamatban van, csak az időt ellenőrizzük
       if (otaInstallWaiting) {
         if (millis() >= otaInstallWaitUntil) {
           otaInstallWaiting = false;
-          // Időlejárat után: ha minden megérkezett, telepítés
           if (otaReceivedBytes == otaTotalBytes && otaTotalBytes > 0) {
-            // [FIX-ESP-12] 2026-05-24: otaTotalBytes nullázása MIELŐTT meghívjuk
-            // az updateFromFS()-t. A performUpdate() ugyanis nem rebootol azonnal
-            // (otaPendingReboot flag + 5 mp), hanem visszatér, és addig az
-            // INSTALL_MODE ág újra meg újra lefut, ismételten triggerelve az
-            // "OTA file complete" üzenetet és próbálkozva updateFromFS()-szel.
-            // otaTotalBytes = 0 után az alábbi feltételek hamisak lesznek,
-            // így az INSTALL_MODE csendben várja a reboot-ot.
             uint32_t savedTotal = otaTotalBytes;
             otaTotalBytes = 0;
             otaReceivedBytes = 0;
             updateFromFS(FLASH);
             (void)savedTotal;  // ha esetleg debug-hoz kéne
-            // updateFromFS → performUpdate → otaPendingReboot=true,
-            // a tényleges reboot az otaLoop() tetején történik 5 mp múlva
           }
         }
         break;  // Várakozás alatt nem futtatjuk le az alábbi logikát
@@ -2700,21 +2228,15 @@ void otaLoop() {
 
       if (otaReceivedBytes == otaTotalBytes && otaTotalBytes > 0) {
         DBG("OTA file complete");
-        // [MOD-2] delay(2000) → nemblokkoló várakozás indítása
         otaInstallWaiting = true;
         otaInstallWaitUntil = millis() + 2000;
 
       } else if (otaTotalBytes > 0) {
-        // [MOD] otaWriteFile = true eltávolítva – duplikált írást okozhatott.
-        // Ha még nem érkezett meg minden byte, egyszerűen várunk.
-        // Az otaWriteFile-t csak az OtaCallbacks::onWrite() állíthatja be,
-        // amikor valóban érkezik új csomag.
         DBG("OTA incomplete");
         DBG_P("Expected: ");
         Serial.println(otaTotalBytes);
         DBG_P("Received: ");
         Serial.println(otaReceivedBytes);
-        // [MOD-2] delay(2000) → nemblokkoló várakozás indítása
         otaInstallWaiting = true;
         otaInstallWaitUntil = millis() + 2000;
       }
