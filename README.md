@@ -75,9 +75,11 @@ makró alapján választ — lásd a `build.sh` `TARGET` opcióját):
 > SENSE lábak (19/20/18) nem ütköznek az USB-CDC-vel.
 >
 > **C6 antenna:** a XIAO ESP32-C6-on a firmware bootkor a **külső antennát**
-> választja az RF-kapcsolón (`WIFI_ENABLE`=GPIO3 LOW + `WIFI_ANT_CONFIG`=GPIO14
-> HIGH). Ezek a panel dedikált RF-switch lábai (nem szabad GPIO-k); ha **beépített**
-> antennát használnál, a `WIFI_ANT_CONFIG`-ot állítsd LOW-ra.
+> választja az RF-kapcsolón: `RF_SWITCH_EN`=GPIO3 LOW (kapcsoló engedélyezés) +
+> `ANT_SELECT`=GPIO14 HIGH (külső antenna; LOW = beépített). Ezek saját `#define`-ok
+> a C6 PINS blokkban (a XIAO variáns `WIFI_ENABLE`/`WIFI_ANT_CONFIG` megfelelői), így
+> generikus C6 boardra is fordul. A 2,4 GHz rádiót Wi-Fi/BLE/802.15.4 közösen
+> használja egy antenna-kapcsolóval, ezért ez a **BLE-re is** vonatkozik.
 
 ---
 

@@ -51,6 +51,8 @@
 #define BUTTON_PIN 1
 #define LED_YELLOW 0
 #define LED_RED 16
+#define RF_SWITCH_EN 3    // RF-kapcsoló engedélyezés (XIAO C6: WIFI_ENABLE), aktív LOW
+#define ANT_SELECT 14     // antenna választó (XIAO C6: WIFI_ANT_CONFIG): HIGH=külső, LOW=belső
 #else
 #define RELAY_FAN1 10
 #define RELAY_FAN2 9
@@ -1197,11 +1199,13 @@ void setup() {
   delay(100);
 
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
-  pinMode(WIFI_ENABLE, OUTPUT);
-  digitalWrite(WIFI_ENABLE, LOW);          // RF switch control aktiválás
+  // C6: külső antenna kiválasztása a BLE rádió indítása ELŐTT (a 2,4 GHz rádiót
+  // Wi-Fi/BLE/802.15.4 közösen használja, egy antenna-kapcsolóval → a BLE is ezen megy).
+  pinMode(RF_SWITCH_EN, OUTPUT);
+  digitalWrite(RF_SWITCH_EN, LOW);         // RF switch control aktiválás
   delay(100);
-  pinMode(WIFI_ANT_CONFIG, OUTPUT);
-  digitalWrite(WIFI_ANT_CONFIG, HIGH);     // külső antenna használata
+  pinMode(ANT_SELECT, OUTPUT);
+  digitalWrite(ANT_SELECT, HIGH);          // külső antenna használata
 #endif
 
   ota_boot_flow();
