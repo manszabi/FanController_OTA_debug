@@ -52,10 +52,25 @@
 
 // ===================== VERSION INFO =====================
 // A verziónkénti változás-történet a verhistory.md fájlban található.
-#define FIRMWARE_VERSION "7.9.1"
-#define FIRMWARE_DATE "2026-06-10"
+#define FIRMWARE_VERSION "7.10.0"
+#define FIRMWARE_DATE "2026-06-14"
 
 // ===================== PINS =====================
+// [FIX-ESP-36] Cél-chip szerinti pinkiosztás. A CONFIG_IDF_TARGET_ESP32C6 makrót
+// az ESP32 core a választott board/FQBN alapján állítja (XIAO_ESP32C6 → C6).
+// Alapértelmezett (egyébként) a Seeed XIAO ESP32-C3 kiosztás.
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+// --- Seeed XIAO ESP32-C6 ---
+#define RELAY_FAN1 23
+#define RELAY_FAN2 22
+#define RELAY_FAN3 21
+#define RELAY_ROLLER 2
+#define RELAY_EN 17
+#define BUTTON_PIN 1
+#define LED_YELLOW 0
+#define LED_RED 16
+#else
+// --- Seeed XIAO ESP32-C3 (alapértelmezett) ---
 #define RELAY_FAN1 10
 #define RELAY_FAN2 9
 #define RELAY_FAN3 8
@@ -64,6 +79,7 @@
 #define BUTTON_PIN 3
 #define LED_YELLOW 5
 #define LED_RED 4
+#endif
 
 // ===================== FAN RELÉ KIMENET FIGYELÉS (H11AA1M) =====================
 #if FAN_SENSE_ENABLE
@@ -79,9 +95,18 @@
 // Bekötés (feltételezett): opto fototranzisztor kollektor → MCU láb (belső
 // pullup), emitter → GND. Így VAN AC → vezet az opto → LOW (aktív). Ha a hardver
 // fordított logikájú, állítsd a FAN_SENSE_ACTIVE_LOW-t 0-ra.
+// [FIX-ESP-36] Cél-chip szerinti kimenet-figyelő pinek (lásd a PINS szekciót).
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+// --- Seeed XIAO ESP32-C6 ---
+#define FAN1_SENSE_PIN 19    // D? — Fan1 (RELAY_FAN1) kimenetének figyelése
+#define FAN2_SENSE_PIN 20    // D? — Fan2 (RELAY_FAN2) kimenetének figyelése
+#define FAN3_SENSE_PIN 18    // D? — Fan3 (RELAY_FAN3) kimenetének figyelése
+#else
+// --- Seeed XIAO ESP32-C3 (alapértelmezett) ---
 #define FAN1_SENSE_PIN 6    // D4 — Fan1 (RELAY_FAN1) kimenetének figyelése
 #define FAN2_SENSE_PIN 7    // D5 — Fan2 (RELAY_FAN2) kimenetének figyelése
 #define FAN3_SENSE_PIN 20   // D7 — Fan3 (RELAY_FAN3) kimenetének figyelése
+#endif
 #define FAN_SENSE_ACTIVE_LOW 1   // 1: LOW = van AC (vezet az opto); 0: fordított
 
 const uint8_t fanSensePins[3] = { FAN1_SENSE_PIN, FAN2_SENSE_PIN, FAN3_SENSE_PIN };

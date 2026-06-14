@@ -90,6 +90,11 @@ Módosítások / Changelog
                      (0xF1) — ezt a send_part() a meglévő 0xF1-kiszolgálással
                      automatikusan újraküldi. NINCS visszafelé kompatibilitás:
                      a v7.9.0 firmware az 5 byte-os (CRC nélküli) 0xFC-t eldobja.
+2026-06-14  [FIX-20] Hibás OTA után nincs többé "Waiting for disconnect" beragadás.
+                     A firmware MINDIG 0x0F-fel jelez (siker: "OTA done" + reboot;
+                     hiba: ERR/FAILED/No space, reboot NÉLKÜL). A küldő mostantól
+                     csak SIKER esetén vár a disconnectre (20s időkorláttal), hiba
+                     esetén azonnal kilép, és az 'async with' bontja a kapcsolatot.
 -------------------------------------------------------------------------------
 """
 
@@ -138,6 +143,7 @@ DEBUG = False
 # [FIX-3] 2026-05-24: Kezdőérték False (volt: True); a logika is meg volt
 #          fordítva — most True jelenti a befejezést, nem a False.
 ota_done = False
+ota_success = False  # [FIX-20] a 0x0F eredmény "OTA done"-t jelzett-e (siker)
 clt = None
 fileBytes = None
 total = 0
@@ -218,9 +224,16 @@ async def start_ota(ble_address: str, file_name: str):
 
         if data[0] == 0x0F:
             result = bytearray(data[1:])
-            print("OTA result: ", str(result, 'utf-8'))
+            msg = str(result, 'utf-8')
+            print("OTA result: ", msg)
             # [FIX-1] 2026-05-24: Átnevezett flag beállítása True-ra a befejezés jelzésére.
-            global ota_done
+            # [FIX-20] 2026-06-14: siker vs hiba megkülönböztetése. A firmware MINDIG
+            #          0x0F-fel jelez: sikernél a szöveg tartalmazza az "OTA done"-t és
+            #          ezután ÚJRAINDUL (a kapcsolat megszakad); hibánál (ERR/FAILED/
+            #          No space) NEM indul újra. Enélkül a küldő a "Waiting for
+            #          disconnect"-nél örökre várt egy hibás OTA után.
+            global ota_done, ota_success
+            ota_success = ("OTA done" in msg) and ("FAILED" not in msg) and ("Not finished" not in msg)
             ota_done = True
 
     def printProgressBar(iteration, total, prefix='', suffix='', decimals=1, length=100, fill='█', printEnd="\r"):
@@ -329,9 +342,20 @@ async def start_ota(ble_address: str, file_name: str):
         #          Az eredeti 'while end:' invertált logikát használt.
         while not ota_done:
             await asyncio.sleep(1.0)
-        print("Waiting for disconnect... ", end="")
-        await disconnected_event.wait()
-        print("-----------Complete--------------")
+
+        # [FIX-20] 2026-06-14: sikernél a firmware ~5s múlva újraindul → megvárjuk a
+        #          disconnectet (időkorláttal, hogy egy elmaradt disconnect-event se
+        #          akasszon be). Hibánál a firmware NEM indul újra → nem várunk
+        #          disconnectre, azonnal kilépünk; az 'async with' bontja a kapcsolatot.
+        if ota_success:
+            print("Waiting for reboot/disconnect... ", end="", flush=True)
+            try:
+                await asyncio.wait_for(disconnected_event.wait(), timeout=20.0)
+                print("\n-----------Complete--------------")
+            except asyncio.TimeoutError:
+                print("\n(timeout: nincs disconnect 20s alatt — ellenőrizd az eszközt)")
+        else:
+            print("-----------OTA FAILED — lásd a fenti 'OTA result'-ot--------------")
 
 
 def isValidAddress(address):
@@ -354,21 +378,31 @@ def isValidAddress(address):
 
 if __name__ == "__main__":
     print(header)
-    if len(sys.argv) > 2:
-        print("Trying to start OTA update")
-        if isValidAddress(sys.argv[1]) and path.exists(sys.argv[2]):
-            # [FIX-11] 2026-05-24: Scan futtatása az OTA előtt, hogy látható legyen
-            #           az eszköz egyáltalán megtalálható-e BLE-n keresztül.
-            # [FIX-18] 2026-05-24: Scan csak DEBUG módban fut — production-ben
-            #           lassítja az OTA-t és nem szükséges.
-            if DEBUG:
-                asyncio.run(scan_devices())
-            asyncio.run(start_ota(sys.argv[1], sys.argv[2]))
+    # [FIX-21] 2026-06-14: a program a végén NEM lép ki magától — az ablak nyitva
+    #          marad, hogy az eredmény (siker/hiba) olvasható legyen. A BLE-kapcsolatot
+    #          ekkorra már az 'async with' lebontotta; itt csak ENTER-re várunk.
+    #          A 'finally' miatt akkor is megáll, ha kivétel (pl. BleakError) történt.
+    try:
+        if len(sys.argv) > 2:
+            print("Trying to start OTA update")
+            if isValidAddress(sys.argv[1]) and path.exists(sys.argv[2]):
+                # [FIX-11] 2026-05-24: Scan futtatása az OTA előtt, hogy látható legyen
+                #           az eszköz egyáltalán megtalálható-e BLE-n keresztül.
+                # [FIX-18] 2026-05-24: Scan csak DEBUG módban fut — production-ben
+                #           lassítja az OTA-t és nem szükséges.
+                if DEBUG:
+                    asyncio.run(scan_devices())
+                asyncio.run(start_ota(sys.argv[1], sys.argv[2]))
+            else:
+                if not isValidAddress(sys.argv[1]):
+                    print("Invalid Address: ", sys.argv[1])
+                if not path.exists(sys.argv[2]):
+                    print("File not found: ", sys.argv[2])
         else:
-            if not isValidAddress(sys.argv[1]):
-                print("Invalid Address: ", sys.argv[1])
-            if not path.exists(sys.argv[2]):
-                print("File not found: ", sys.argv[2])
-    else:
-        print("Specify the device address and firmware file")
-        print(">python ota.py \"01:23:45:67:89:ab\" \"firmware.bin\"")
+            print("Specify the device address and firmware file")
+            print(">python ota.py \"01:23:45:67:89:ab\" \"firmware.bin\"")
+    finally:
+        try:
+            input("\nNyomj ENTER-t az ablak bezárásához...")
+        except (EOFError, KeyboardInterrupt):
+            pass
