@@ -52,7 +52,7 @@
 
 // ===================== VERSION INFO =====================
 // A verziónkénti változás-történet a verhistory.md fájlban található.
-#define FIRMWARE_VERSION "7.10.1"
+#define FIRMWARE_VERSION "7.11.0"
 #define FIRMWARE_DATE "2026-06-14"
 
 // ===================== PINS =====================
@@ -146,8 +146,13 @@ bool fanNoacWarned[3] = { false, false, false };      // NOAC: figyelmeztettünk
 #define OTA_UPDATE_MODE 1
 #define OTA_INSTALL_MODE 2
 
-uint8_t otaBuf1[16384];
-uint8_t otaBuf2[16384];
+// [FIX-ESP-38] Egyetlen OTA-buffer, DINAMIKUSAN allokálva (csak OTA alatt). A
+// [FIX-ESP-34/35] óta a part-feldolgozás soros (egyszerre egy part van úton), így
+// a régi kettős, statikus 2×16 KB buffer felesleges volt. Most: normál üzemben
+// 0 KB, OTA-kezdéskor (0xFF) malloc(OTA_BUF_SIZE), telepítéskor/abortkor/disconnectkor
+// free → ~16 KB-tal kevesebb RAM normál működésben, ~16 KB-tal OTA alatt is.
+static const size_t OTA_BUF_SIZE = 16384;
+static uint8_t* otaBuf = nullptr;
 
 // ===================== DIAG LOG (FIX-ESP-14) =====================
 // [FIX-ESP-14] 2026-05-30: SPIFFS-be mentett diagnosztikai napló, hogy BLE-n
@@ -174,8 +179,7 @@ static BLECharacteristic* pOtaRx = nullptr;
 static bool otaDeviceConnected = false;
 static bool otaSendSize = true;
 static bool otaWriteFile = false;
-static int otaWriteLen1 = 0, otaWriteLen2 = 0;
-static bool otaCurrentBuf = true;
+static int otaWriteLen = 0;            // [FIX-ESP-38] az aktuális part hossza (egy buffer)
 static int otaParts = 0, otaCur = 0, otaMTU = 0;
 static int otaMode = OTA_NORMAL_MODE;
 unsigned long otaReceivedBytes = 0, otaTotalBytes = 0;
@@ -432,15 +436,14 @@ static void otaAbort(const String& msg) {
     delay(200);
   }
   if (FLASH.exists("/update.bin")) FLASH.remove("/update.bin");
+  if (otaBuf) { free(otaBuf); otaBuf = nullptr; }  // [FIX-ESP-38] buffer felszabadítása
   otaMode = OTA_NORMAL_MODE;
   otaReceivedBytes = 0;
   otaTotalBytes = 0;
   otaParts = 0;
   otaCur = 0;
   otaMTU = 0;
-  otaCurrentBuf = true;
-  otaWriteLen1 = 0;
-  otaWriteLen2 = 0;
+  otaWriteLen = 0;
   otaWriteFile = false;
   otaPartRetry = 0;
   otaExpectedPart = 0;
@@ -508,10 +511,9 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
     otaParts = 0;
     otaCur = 0;
     otaMTU = 0;
-    otaCurrentBuf = true;
-    otaWriteLen1 = 0;
-    otaWriteLen2 = 0;
+    otaWriteLen = 0;
     otaPartRetry = 0;
+    if (otaBuf) { free(otaBuf); otaBuf = nullptr; }  // [FIX-ESP-38]
 
     // Töröljük a részben felírt update.bin-t
     if (fs.exists(path)) {
@@ -877,9 +879,8 @@ class MyServerCallbacks : public BLEServerCallbacks {
       otaParts = 0;
       otaCur = 0;
       otaMTU = 0;
-      otaCurrentBuf = true;
-      otaWriteLen1 = 0;
-      otaWriteLen2 = 0;
+      otaWriteLen = 0;
+      if (otaBuf) { free(otaBuf); otaBuf = nullptr; }  // [FIX-ESP-38]
       if (FLASH.exists("/update.bin")) {
         FLASH.remove("/update.bin");
         DBG("Incomplete update.bin removed");
@@ -1043,12 +1044,12 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
     OTA_DBG("OTA packet");
 
     if (pData[0] == 0xFB) {
-      int pos = pData[1];
-      for (int x = 0; x < len - 2; x++) {
-        if (otaCurrentBuf) {
-          otaBuf1[(pos * otaMTU) + x] = pData[x + 2];
-        } else {
-          otaBuf2[(pos * otaMTU) + x] = pData[x + 2];
+      // [FIX-ESP-38] Egy buffer (dinamikus). A base+x korlát-ellenőrzés a heap-
+      // buffer védelme (érvényes framenél sosem lép túl).
+      if (otaBuf) {
+        int base = pData[1] * otaMTU;
+        for (int x = 0; x < len - 2; x++) {
+          if ((base + x) < (int)OTA_BUF_SIZE) otaBuf[base + x] = pData[x + 2];
         }
       }
 
@@ -1072,14 +1073,9 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
           otaAbort("0xFC truncated");
         }
       } else {
-        if (otaCurrentBuf) {
-          otaWriteLen1 = (pData[1] * 256) + pData[2];
-        } else {
-          otaWriteLen2 = (pData[1] * 256) + pData[2];
-        }
+        otaWriteLen = (pData[1] * 256) + pData[2];
         otaExpectedCrc = ((uint32_t)pData[5] << 24) | ((uint32_t)pData[6] << 16) |
                          ((uint32_t)pData[7] << 8) | ((uint32_t)pData[8]);
-        otaCurrentBuf = !otaCurrentBuf;
         otaCur = (pData[3] * 256) + pData[4];
         otaWriteFile = true;
         // [FIX-ESP-34] A következő partot NEM itt kérjük — előbb a CRC-t
@@ -1135,21 +1131,28 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
       otaMTU = (pData[3] * 256) + pData[4];
       // [FIX-ESP-35] Tiszta kezdőállapot az új átvitelhez.
       otaCur = 0;
-      otaCurrentBuf = true;
       otaWriteFile = false;
       otaPartRetry = 0;
       otaExpectedPart = 0;
-      otaMode = OTA_UPDATE_MODE;
-      DBG_P("OTA parts: ");
-      Serial.println(otaParts);
-      // [FIX-ESP-35] A part-0-t ITT, DETERMINISZTIKUSAN kérjük (0xF1 0) — nem a
-      // korábbi 0xAA-handshake-kel, ami a NORMAL_MODE-ban futott és versenyezhetett
-      // a 0xFF beérkezésével ("stuck part 0" rés). Innentől a folyamat tisztán
-      // pull-alapú: minden további partot az otaLoop kér a CRC-OK után.
-      if (pOtaTx) {
-        uint8_t rq[] = { 0xF1, 0x00, 0x00 };
-        pOtaTx->setValue(rq, 3);
-        pOtaTx->notify();
+      // [FIX-ESP-38] OTA-buffer allokálása (csak most, az átvitel idejére). Ha
+      // nincs elég (összefüggő) heap, érthető hibával megszakítjuk — nem indul OTA.
+      if (!otaBuf) otaBuf = (uint8_t*)malloc(OTA_BUF_SIZE);
+      if (!otaBuf) {
+        DBG("OTA abort: malloc fail (no RAM)");
+        otaAbort("no RAM for OTA");
+      } else {
+        otaMode = OTA_UPDATE_MODE;
+        DBG_P("OTA parts: ");
+        Serial.println(otaParts);
+        // [FIX-ESP-35] A part-0-t ITT, DETERMINISZTIKUSAN kérjük (0xF1 0) — nem a
+        // korábbi 0xAA-handshake-kel, ami a NORMAL_MODE-ban futott és versenyezhetett
+        // a 0xFF beérkezésével ("stuck part 0" rés). Innentől a folyamat tisztán
+        // pull-alapú: minden további partot az otaLoop kér a CRC-OK után.
+        if (pOtaTx) {
+          uint8_t rq[] = { 0xF1, 0x00, 0x00 };
+          pOtaTx->setValue(rq, 3);
+          pOtaTx->notify();
+        }
       }
 
     } else if (pData[0] == 0xEF) {
@@ -2596,10 +2599,11 @@ void otaLoop() {
       // versenyhibák — [FIX-ESP-1/5] — megszűnnek), és minden part integritása
       // garantált a SPIFFS-re írás előtt.
       if (otaWriteFile) {
-        // A most kitöltött buffer az otaCurrentBuf MOSTANI (a 0xFC-ben már
-        // megfordított) állapotával ellentétes: !otaCurrentBuf → buf1, egyébként buf2.
-        uint8_t* buf = (!otaCurrentBuf) ? otaBuf1 : otaBuf2;
-        int      blen = (!otaCurrentBuf) ? otaWriteLen1 : otaWriteLen2;
+        // [FIX-ESP-38] Egyetlen, dinamikusan allokált buffer. Ha valamiért nincs
+        // (nem fordulhat elő érvényes folyamatban), nem dolgozunk fel.
+        if (!otaBuf) { otaWriteFile = false; break; }
+        uint8_t* buf = otaBuf;
+        int      blen = otaWriteLen;
 
         uint32_t crc = crc32_zlib(buf, (size_t)blen);
 
@@ -2642,6 +2646,10 @@ void otaLoop() {
           pOtaTx->setValue(com, 3);
           pOtaTx->notify();
           delay(50);
+          // [FIX-ESP-38] Minden part kiírva → a buffer már nem kell. Felszabadítjuk
+          // a telepítés (Update.writeStream flash-művelet) ELŐTT, hogy a 16 KB a
+          // memóriaigényes flash-íráshoz rendelkezésre álljon.
+          if (otaBuf) { free(otaBuf); otaBuf = nullptr; }
           otaMode = OTA_INSTALL_MODE;
         } else {
           // következő part kérése
