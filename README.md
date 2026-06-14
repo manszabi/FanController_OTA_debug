@@ -3,7 +3,7 @@
 ESP32-C3/C6 alapú **háromfokozatú ventilátor- és görgővezérlő**, BLE-n keresztül
 irányítható, OTA firmware-frissítéssel, és beépített diagnosztikai naplóval.
 
-**Aktuális firmware verzió:** `7.10.0` (2026-06-14)
+**Aktuális firmware verzió:** `7.10.1` (2026-06-14)
 
 ---
 
@@ -73,6 +73,11 @@ makró alapján választ — lásd a `build.sh` `TARGET` opcióját):
 > szabad, ha a `Serial` **USB-CDC** (és nem a hardveres UART0); mivel a `RELAY_EN`
 > a GPIO21 (U0TXD) kimenetként van használva, ez teljesül. A C6-os kiosztásnál a
 > SENSE lábak (19/20/18) nem ütköznek az USB-CDC-vel.
+>
+> **C6 antenna:** a XIAO ESP32-C6-on a firmware bootkor a **külső antennát**
+> választja az RF-kapcsolón (`WIFI_ENABLE`=GPIO3 LOW + `WIFI_ANT_CONFIG`=GPIO14
+> HIGH). Ezek a panel dedikált RF-switch lábai (nem szabad GPIO-k); ha **beépített**
+> antennát használnál, a `WIFI_ANT_CONFIG`-ot állítsd LOW-ra.
 
 ---
 
@@ -409,6 +414,7 @@ A teljes, részletes változás-napló ([MOD-x] / [FIX-ESP-x] bejegyzésekkel):
 
 | Verzió | Változás |
 | --- | --- |
+| **7.10.1** | XIAO ESP32-C6: bootkor a **külső antenna** kiválasztása (RF-switch: `WIFI_ENABLE` GPIO3 LOW + `WIFI_ANT_CONFIG` GPIO14 HIGH), a rádió indítása előtt. Csak C6-on fordul bele; C3 változatlan. |
 | **7.10.0** | **XIAO ESP32-C6 támogatás**: a pinkiosztás cél-chip szerint feltételes (`CONFIG_IDF_TARGET_ESP32C6` → C6, egyébként C3). A `build.sh` `TARGET=c3/c6`-tal fordít. C6 GPIO-k: FAN 23/22/21, ROLLER 2, EN 17, BUTTON 1, LED 0/16, SENSE 19/20/18. |
 | **7.9.1** | OTA-indítás determinisztikus: a `0xFF`-re a fogadó azonnal `0xF1 0`-t kér (a régi `0xAA`-handshake helyett) → megszűnik a „stuck part 0" verseny. Csonka `0xFC` (<9 byte) → part-újrakérés a csendes eldobás helyett. Közös `otaAbort()` helper. |
 | **7.9.0** | OTA per-part **CRC32 + újraküldés**: a `0xFC` 4 byte zlib-CRC32-t hordoz, a fogadó a SPIFFS-írás előtt ellenőrzi, hibánál ugyanazt a partot újrakéri (max 5×, utána abort + diag.log). Soros part-feldolgozás (a kettős-buffer versenyhibák kiváltva), CRC32 boot-önteszt. Régi (CRC nélküli) küldő nem támogatott. |
