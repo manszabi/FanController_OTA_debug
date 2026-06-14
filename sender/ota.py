@@ -378,21 +378,31 @@ def isValidAddress(address):
 
 if __name__ == "__main__":
     print(header)
-    if len(sys.argv) > 2:
-        print("Trying to start OTA update")
-        if isValidAddress(sys.argv[1]) and path.exists(sys.argv[2]):
-            # [FIX-11] 2026-05-24: Scan futtatása az OTA előtt, hogy látható legyen
-            #           az eszköz egyáltalán megtalálható-e BLE-n keresztül.
-            # [FIX-18] 2026-05-24: Scan csak DEBUG módban fut — production-ben
-            #           lassítja az OTA-t és nem szükséges.
-            if DEBUG:
-                asyncio.run(scan_devices())
-            asyncio.run(start_ota(sys.argv[1], sys.argv[2]))
+    # [FIX-21] 2026-06-14: a program a végén NEM lép ki magától — az ablak nyitva
+    #          marad, hogy az eredmény (siker/hiba) olvasható legyen. A BLE-kapcsolatot
+    #          ekkorra már az 'async with' lebontotta; itt csak ENTER-re várunk.
+    #          A 'finally' miatt akkor is megáll, ha kivétel (pl. BleakError) történt.
+    try:
+        if len(sys.argv) > 2:
+            print("Trying to start OTA update")
+            if isValidAddress(sys.argv[1]) and path.exists(sys.argv[2]):
+                # [FIX-11] 2026-05-24: Scan futtatása az OTA előtt, hogy látható legyen
+                #           az eszköz egyáltalán megtalálható-e BLE-n keresztül.
+                # [FIX-18] 2026-05-24: Scan csak DEBUG módban fut — production-ben
+                #           lassítja az OTA-t és nem szükséges.
+                if DEBUG:
+                    asyncio.run(scan_devices())
+                asyncio.run(start_ota(sys.argv[1], sys.argv[2]))
+            else:
+                if not isValidAddress(sys.argv[1]):
+                    print("Invalid Address: ", sys.argv[1])
+                if not path.exists(sys.argv[2]):
+                    print("File not found: ", sys.argv[2])
         else:
-            if not isValidAddress(sys.argv[1]):
-                print("Invalid Address: ", sys.argv[1])
-            if not path.exists(sys.argv[2]):
-                print("File not found: ", sys.argv[2])
-    else:
-        print("Specify the device address and firmware file")
-        print(">python ota.py \"01:23:45:67:89:ab\" \"firmware.bin\"")
+            print("Specify the device address and firmware file")
+            print(">python ota.py \"01:23:45:67:89:ab\" \"firmware.bin\"")
+    finally:
+        try:
+            input("\nNyomj ENTER-t az ablak bezárásához...")
+        except (EOFError, KeyboardInterrupt):
+            pass
