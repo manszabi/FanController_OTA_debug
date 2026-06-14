@@ -62,16 +62,6 @@ async def start_ota(ble_address: str, file_name: str):
         if DEBUG:
             print(f"RX: {data.hex()}")
 
-        if data[0] == 0xAA:
-            print("Transfer mode:", data[1])
-            printProgressBar(0, total, prefix='Progress:', suffix='Complete', length=50)
-            if data[1] == 1:
-                for x in range(0, fileParts):
-                    await send_part(x, fileBytes, clt)
-                    printProgressBar(x + 1, total, prefix='Progress:', suffix='Complete', length=50)
-            else:
-                await send_part(0, fileBytes, clt)
-
         if data[0] == 0xF1:
             nxt = int.from_bytes(bytearray([data[1], data[2]]), "big")
             await send_part(nxt, fileBytes, clt)
