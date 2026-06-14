@@ -52,7 +52,7 @@
 
 // ===================== VERSION INFO =====================
 // A verziónkénti változás-történet a verhistory.md fájlban található.
-#define FIRMWARE_VERSION "7.9.0"
+#define FIRMWARE_VERSION "7.9.1"
 #define FIRMWARE_DATE "2026-06-10"
 
 // ===================== PINS =====================
@@ -147,7 +147,6 @@ static BLECharacteristic* pOtaTx = nullptr;
 static BLECharacteristic* pOtaRx = nullptr;
 
 static bool otaDeviceConnected = false;
-static bool otaSendMode = false;
 static bool otaSendSize = true;
 static bool otaWriteFile = false;
 static int otaWriteLen1 = 0, otaWriteLen2 = 0;
@@ -167,6 +166,9 @@ bool otaLedState = false;
 static uint32_t otaExpectedCrc = 0;    // a 0xFC-ben kapott elvárt CRC32
 static int otaPartRetry = 0;           // aktuális part újraküldés-számláló
 static const int MAX_PART_RETRY = 5;   // ennyi sikertelen CRC után abort
+// [FIX-ESP-35] Az éppen várt part indexe (amit utoljára kértünk 0xF1-gyel). Csonka
+// 0xFC vagy újrakérés esetén ezt kérjük újra, így nincs „elveszett part" stall.
+static int otaExpectedPart = 0;
 
 // [MOD-1] Új globálisok: nemblokkoló reboot várakozáshoz
 bool otaPendingReboot = false;
@@ -387,6 +389,36 @@ static uint32_t crc32_zlib(const uint8_t* p, size_t n) {
     }
   }
   return ~crc;
+}
+
+// [FIX-ESP-35] OTA megszakítás EGY helyen: hibaüzenet a kliensnek (0x0F) +
+// diag.log + a részleges update.bin törlése + a teljes OTA-állapot visszaállítása
+// NORMAL_MODE-ba. A CRC-retry-túllépés és a csonka 0xFC is ezt hívja (DRY).
+static void otaAbort(const String& msg) {
+  DBG_P("OTA abort: ");
+  Serial.println(msg);
+  char e[80];
+  snprintf(e, sizeof(e), "[ota] abort: %.60s", msg.c_str());
+  diagLog(e);
+  if (pOtaTx) {
+    String result = String((char)0x0F) + "ERR: " + msg;
+    pOtaTx->setValue(result.c_str());
+    pOtaTx->notify();
+    delay(200);
+  }
+  if (FLASH.exists("/update.bin")) FLASH.remove("/update.bin");
+  otaMode = OTA_NORMAL_MODE;
+  otaReceivedBytes = 0;
+  otaTotalBytes = 0;
+  otaParts = 0;
+  otaCur = 0;
+  otaMTU = 0;
+  otaCurrentBuf = true;
+  otaWriteLen1 = 0;
+  otaWriteLen2 = 0;
+  otaWriteFile = false;
+  otaPartRetry = 0;
+  otaExpectedPart = 0;
 }
 
 static void rebootEspWithReason(String reason) {
@@ -816,6 +848,7 @@ class MyServerCallbacks : public BLEServerCallbacks {
       otaTotalBytes = 0;
       otaWriteFile = false;
       otaPartRetry = 0;
+      otaExpectedPart = 0;
       otaParts = 0;
       otaCur = 0;
       otaMTU = 0;
@@ -1001,7 +1034,18 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
       // [crc24][crc16][crc8][crc0]. CRC nélkül (rövid csomag) nem dolgozzuk fel —
       // a BLE link-réteg integritást garantál, így ez csak védelem a csonkolás ellen.
       if (len < 9) {
-        DBG("0xFC too short (no CRC) — ignored");
+        // [FIX-ESP-35] Csonka 0xFC (nincs meg a 4 byte CRC) — a part framing sérült.
+        // A BLE link-réteg miatt gyakorlatilag kizárt, de védelemként újrakérjük az
+        // aktuálisan várt partot (retry-limittel), nem hagyjuk csendben elveszni.
+        DBG("0xFC too short (no CRC) — re-requesting part");
+        otaPartRetry++;
+        if (otaPartRetry <= MAX_PART_RETRY && pOtaTx) {
+          uint8_t rq[] = { 0xF1, (uint8_t)(otaExpectedPart / 256), (uint8_t)(otaExpectedPart % 256) };
+          pOtaTx->setValue(rq, 3);
+          pOtaTx->notify();
+        } else {
+          otaAbort("0xFC truncated");
+        }
       } else {
         if (otaCurrentBuf) {
           otaWriteLen1 = (pData[1] * 256) + pData[2];
@@ -1019,7 +1063,8 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
       }
 
     } else if (pData[0] == 0xFD) {
-      otaSendMode = true;
+      // [FIX-ESP-35] Tiszta lap: a régi update.bin törlése. A korábbi 0xAA-alapú
+      // indítás megszűnt — a part-0-t a 0xFF determinisztikusan kéri (lásd lent).
       if (FLASH.exists("/update.bin")) {
         FLASH.remove("/update.bin");
       }
@@ -1063,9 +1108,24 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
     } else if (pData[0] == 0xFF) {
       otaParts = (pData[1] * 256) + pData[2];
       otaMTU = (pData[3] * 256) + pData[4];
+      // [FIX-ESP-35] Tiszta kezdőállapot az új átvitelhez.
+      otaCur = 0;
+      otaCurrentBuf = true;
+      otaWriteFile = false;
+      otaPartRetry = 0;
+      otaExpectedPart = 0;
       otaMode = OTA_UPDATE_MODE;
       DBG_P("OTA parts: ");
       Serial.println(otaParts);
+      // [FIX-ESP-35] A part-0-t ITT, DETERMINISZTIKUSAN kérjük (0xF1 0) — nem a
+      // korábbi 0xAA-handshake-kel, ami a NORMAL_MODE-ban futott és versenyezhetett
+      // a 0xFF beérkezésével ("stuck part 0" rés). Innentől a folyamat tisztán
+      // pull-alapú: minden további partot az otaLoop kér a CRC-OK után.
+      if (pOtaTx) {
+        uint8_t rq[] = { 0xF1, 0x00, 0x00 };
+        pOtaTx->setValue(rq, 3);
+        pOtaTx->notify();
+      }
 
     } else if (pData[0] == 0xEF) {
       FLASH.format();
@@ -2466,14 +2526,8 @@ void otaLoop() {
 
     case OTA_NORMAL_MODE:
       if (otaDeviceConnected) {
-        if (otaSendMode) {
-          uint8_t fMode[] = { 0xAA, 0x00 };
-          pOtaTx->setValue(fMode, 2);
-          pOtaTx->notify();
-          delay(50);
-          otaSendMode = false;
-        }
-
+        // [FIX-ESP-35] A 0xAA „transfer mode" jel megszűnt — az átvitelt a 0xFF
+        // indítja determinisztikusan (0xF1 0). Itt már csak a flash-méret válasz fut.
         if (otaSendSize) {
           unsigned long x = FLASH.totalBytes();
           unsigned long y = FLASH.usedBytes();
@@ -2525,33 +2579,14 @@ void otaLoop() {
             char e[72];
             snprintf(e, sizeof(e), "[ota] crc retry part=%d try=%d", otaCur, otaPartRetry);
             diagLog(e);
+            otaExpectedPart = otaCur;  // [FIX-ESP-35] ugyanezt a partot várjuk vissza
             uint8_t rq[] = { 0xF1, (uint8_t)(otaCur / 256), (uint8_t)(otaCur % 256) };
             pOtaTx->setValue(rq, 3);
             pOtaTx->notify();
             delay(50);
           } else {
-            // túl sok sikertelen kísérlet → OTA abort
-            DBG("OTA abort: too many CRC retries");
-            char e[72];
-            snprintf(e, sizeof(e), "[ota] crc abort part=%d", otaCur);
-            diagLog(e);
-            if (pOtaTx) {
-              String result = String((char)0x0F) + "ERR: CRC fail part " + String(otaCur);
-              pOtaTx->setValue(result.c_str());
-              pOtaTx->notify();
-              delay(200);
-            }
-            if (FLASH.exists("/update.bin")) FLASH.remove("/update.bin");
-            otaMode = OTA_NORMAL_MODE;
-            otaReceivedBytes = 0;
-            otaTotalBytes = 0;
-            otaParts = 0;
-            otaCur = 0;
-            otaMTU = 0;
-            otaCurrentBuf = true;
-            otaWriteLen1 = 0;
-            otaWriteLen2 = 0;
-            otaPartRetry = 0;
+            // [FIX-ESP-35] túl sok sikertelen kísérlet → OTA abort (közös helper)
+            otaAbort("CRC fail part " + String(otaCur));
           }
           break;
         }
@@ -2572,6 +2607,7 @@ void otaLoop() {
           otaMode = OTA_INSTALL_MODE;
         } else {
           // következő part kérése
+          otaExpectedPart = otaCur + 1;  // [FIX-ESP-35] ezt várjuk vissza
           uint8_t rq[] = { 0xF1, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
           pOtaTx->setValue(rq, 3);
           pOtaTx->notify();

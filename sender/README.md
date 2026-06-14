@@ -1,12 +1,13 @@
 # BLE OTA küldő (CRC-s, firmware ≥ 7.9.0)
 
-Ez a `ota.py` a [BLE_OTA_Python-main](https://github.com/manszabi/BLE_OTA_Python-main)
-küldő **CRC-s változata**, ami együttműködik a `FanController_OTA_debug` **v7.9.0+**
-firmware-rel (`[FIX-ESP-34]` per-part CRC32 + újraküldés).
+Ez a projekt **saját OTA-küldője** (`ota.py`), a `FanController_OTA_debug`
+firmware párja. Itt, ebben a repóban karbantartott — ez a kanonikus küldő a
+**v7.9.0+** firmware-hez (`[FIX-ESP-34]` per-part CRC32 + újraküldés).
 
-> A küldő repó nincs ennek a sessionnek a hatókörében, ezért a módosított fájl
-> ide került. **Másold át** a `ota.py`-t a `BLE_OTA_Python-main` repóba (a régi
-> `ota.py` helyére).
+> Eredet: a [BLE_OTA_Python](https://github.com/fbiego/ESP32_BLE_OTA_Arduino)
+> (fbiego) protokollra épül; innen kiindulva, a firmware CRC-s protokolljához
+> igazítva. A küldő mostantól ehhez a repóhoz tartozik — **nincs külön sender
+> repó**, a változásokat itt kell követni.
 
 ## Mi változott (`[FIX-19]`)
 
