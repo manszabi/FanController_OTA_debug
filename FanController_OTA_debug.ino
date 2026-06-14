@@ -52,7 +52,7 @@
 
 // ===================== VERSION INFO =====================
 // A verziónkénti változás-történet a verhistory.md fájlban található.
-#define FIRMWARE_VERSION "7.10.0"
+#define FIRMWARE_VERSION "7.10.1"
 #define FIRMWARE_DATE "2026-06-14"
 
 // ===================== PINS =====================
@@ -1443,6 +1443,19 @@ void handleDiagRequest() {
 void setup() {
   Serial.begin(115200);
   delay(100);
+
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+  // [FIX-ESP-37] XIAO ESP32-C6: KÜLSŐ antenna kiválasztása. A panelen RF-kapcsoló
+  // van: a GPIO3 (WIFI_ENABLE) LOW engedélyezi a kapcsoló tápját, a GPIO14
+  // (WIFI_ANT_CONFIG) HIGH = külső antenna (LOW = beépített). A rádió (BLE)
+  // indítása ELŐTT kell beállítani. C3-on ez a blokk bele sem fordul, így a C3
+  // működése változatlan. (WIFI_ENABLE/WIFI_ANT_CONFIG a XIAO_ESP32C6 variánsból.)
+  pinMode(WIFI_ENABLE, OUTPUT);
+  digitalWrite(WIFI_ENABLE, LOW);          // RF switch control aktiválás
+  delay(100);
+  pinMode(WIFI_ANT_CONFIG, OUTPUT);
+  digitalWrite(WIFI_ANT_CONFIG, HIGH);     // külső antenna használata
+#endif
 
   ota_boot_flow();
 
