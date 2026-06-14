@@ -299,8 +299,8 @@ A frissítés a dedikált OTA BLE szolgáltatáson keresztül történik. Védel
   `[ota] crc retry/abort` a diag naplóba). A part-feldolgozás **soros**: a
   következő part kérése csak CRC-OK + sikeres írás után megy ki. Bootkor CRC32
   **önteszt** fut (`crc32("123456789")==0xCBF43926`).
-  ⚠️ **Nincs visszafelé kompatibilitás**: a régi (CRC nélküli) küldő nem támogatott —
-  a küldő `ota.py`-nak a CRC-s `0xFC`-t kell küldenie.
+  ⚠️ **Nincs visszafelé kompatibilitás**: a régi (CRC nélküli) küldő nem támogatott.
+  A hozzá tartozó CRC-s küldő ebben a repóban van: **[`sender/ota.py`](sender/)**.
 - **Magic-byte ellenőrzés** (`[FIX-ESP-16]`): az `Update.begin()` előtt ellenőrzi,
   hogy a feltöltött bináris első byte-ja **0xE9** (érvényes ESP32 app image).
   Ha nem, **érthető hibát** ad a félrevezető „Decryption error" helyett, és a
