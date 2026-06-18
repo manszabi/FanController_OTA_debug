@@ -38,7 +38,7 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.11.1"
+#define FIRMWARE_VERSION "7.11.2"
 #define FIRMWARE_DATE "2026-06-14"
 
 // ===================== PINS =====================
@@ -1205,19 +1205,19 @@ void handleDiagRequest() {
 
 // ===================== SETUP =====================
 void setup() {
-  Serial.begin(115200);
-  delay(100);
-
-  // [FIX-ESP-39] Relék AZONNALI tiltása a boot legelején: a tápengedély LOW, és
-  // minden relé-kimenet OFF (aktív-LOW → HIGH=ki). Így a boot-pillanatban (C6-on a
-  // GPIO17/RELAY_EN belső felhúzása miatt) a relék biztosan nem kapnak tápot, amíg
-  // a visszaállító logika nem dönt → kisebb bekapcsolási áramlökés / brownout-esély.
+  // [FIX-ESP-39] Relék AZONNALI tiltása a setup() LEGELSŐ lépéseként — még a
+  // Serial.begin/delay ELŐTT, mert a GPIO-hoz nem kell a Serial, viszont így a
+  // legrövidebb a boot-állapot ablaka. Tápengedély LOW + minden relé OFF (aktív-LOW
+  // → HIGH=ki). C6-on a GPIO17/RELAY_EN belső felhúzása miatt különösen fontos.
   pinMode(RELAY_EN, OUTPUT);
   digitalWrite(RELAY_EN, LOW);
   pinMode(RELAY_FAN1, OUTPUT);   digitalWrite(RELAY_FAN1, HIGH);
   pinMode(RELAY_FAN2, OUTPUT);   digitalWrite(RELAY_FAN2, HIGH);
   pinMode(RELAY_FAN3, OUTPUT);   digitalWrite(RELAY_FAN3, HIGH);
   pinMode(RELAY_ROLLER, OUTPUT); digitalWrite(RELAY_ROLLER, HIGH);
+
+  Serial.begin(115200);
+  delay(100);
 
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
   // C6: külső antenna kiválasztása a BLE rádió indítása ELŐTT (a 2,4 GHz rádiót
