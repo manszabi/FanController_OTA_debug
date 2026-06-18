@@ -38,7 +38,7 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.11.0"
+#define FIRMWARE_VERSION "7.11.1"
 #define FIRMWARE_DATE "2026-06-14"
 
 // ===================== PINS =====================
@@ -252,6 +252,16 @@ RTC_NOINIT_ATTR int savedZone;
 RTC_NOINIT_ATTR uint32_t savedRollerMagic;
 RTC_NOINIT_ATTR int savedRoller;       // 1 = aktív volt, 0 = nem
 #define SAVED_ROLLER_MAGIC 0xF0117E55
+
+// [FIX-ESP-39] Hibás-reset hurok-megszakító. Számolja az egymást követő, gyors
+// hibás reset + visszaállítás eseményeket (RTC-ben). Ha rövid időn belül eléri a
+// limitet, a boot nem állítja vissza a görgőt/ventit → megszakad a brownout-hurok.
+RTC_NOINIT_ATTR uint32_t errRestoreMagic;
+RTC_NOINIT_ATTR int errRestoreCount;
+#define ERR_RESTORE_MAGIC 0x10075EED
+const int MAX_ERR_RESTORE = 3;                       // ennyiedik egymást követőnél már idle
+const unsigned long ERR_RESTORE_CLEAR_MS = 30000;    // ennyi stabil futás után nullázzuk
+bool errRestoreCleared = false;
 
 Preferences fanPrefs;
 int nvsLastSavedZone = -1;             // amit utoljára NVS-be írtunk (cache, hogy ne írjunk feleslegesen)
@@ -1198,6 +1208,17 @@ void setup() {
   Serial.begin(115200);
   delay(100);
 
+  // [FIX-ESP-39] Relék AZONNALI tiltása a boot legelején: a tápengedély LOW, és
+  // minden relé-kimenet OFF (aktív-LOW → HIGH=ki). Így a boot-pillanatban (C6-on a
+  // GPIO17/RELAY_EN belső felhúzása miatt) a relék biztosan nem kapnak tápot, amíg
+  // a visszaállító logika nem dönt → kisebb bekapcsolási áramlökés / brownout-esély.
+  pinMode(RELAY_EN, OUTPUT);
+  digitalWrite(RELAY_EN, LOW);
+  pinMode(RELAY_FAN1, OUTPUT);   digitalWrite(RELAY_FAN1, HIGH);
+  pinMode(RELAY_FAN2, OUTPUT);   digitalWrite(RELAY_FAN2, HIGH);
+  pinMode(RELAY_FAN3, OUTPUT);   digitalWrite(RELAY_FAN3, HIGH);
+  pinMode(RELAY_ROLLER, OUTPUT); digitalWrite(RELAY_ROLLER, HIGH);
+
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
   // C6: külső antenna kiválasztása a BLE rádió indítása ELŐTT (a 2,4 GHz rádiót
   // Wi-Fi/BLE/802.15.4 közösen használja, egy antenna-kapcsolóval → a BLE is ezen megy).
@@ -1391,8 +1412,24 @@ void setup() {
     else if (rollerNvsValid) rollerWas = nvsLastSavedRoller;   // NVS fallback (brownout)
     else                     rollerWas = -1;                   // ismeretlen → nem indítunk
 
+    // [FIX-ESP-39] Hurok-megszakító számláló (RTC). Érvénytelen magic → 0-ról indul.
+    if (errRestoreMagic != ERR_RESTORE_MAGIC) {
+      errRestoreCount = 0;
+      errRestoreMagic = ERR_RESTORE_MAGIC;
+    }
+
     if (rollerWas != 1) {
       DBG("Boot after error reset, roller was NOT active → staying idle");
+    } else if (++errRestoreCount >= MAX_ERR_RESTORE) {
+      // Túl sok egymást követő, gyors hibás reset → valószínű brownout-hurok.
+      // NEM állítunk vissza: maradunk idle, így az eszköz vezérelhető és a hurok
+      // megszakad. A számláló 30 s stabil futás után (loop) nullázódik.
+      DBG_P("Loop-break: consecutive error-restores=");
+      Serial.print(errRestoreCount);
+      Serial.println(" → staying idle");
+      char e[64];
+      snprintf(e, sizeof(e), "[boot] loop-break idle n=%d", errRestoreCount);
+      diagLog(e);
     } else {
       DBG("Boot after BROWNOUT/UNKNOWN/WDT, roller was active → resuming");
       enableRelays();
@@ -1429,6 +1466,15 @@ void setup() {
 void loop() {
   esp_task_wdt_reset();
   unsigned long now2 = millis();
+
+  // [FIX-ESP-39] Ha az eszköz ERR_RESTORE_CLEAR_MS ideje stabilan fut (nem hurkol),
+  // nullázzuk a hibás-reset számlálót → egy későbbi, magányos hibás reset megint
+  // normálisan visszaállít. Csak a gyors (30 s-en belül ismétlődő) reseteket számoljuk.
+  if (!errRestoreCleared && now2 >= ERR_RESTORE_CLEAR_MS) {
+    errRestoreCount = 0;
+    errRestoreMagic = ERR_RESTORE_MAGIC;
+    errRestoreCleared = true;
+  }
 
   if (now2 - lastCheck >= checkInterval) {
     lastCheck = now2;
