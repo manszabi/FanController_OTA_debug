@@ -38,8 +38,8 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.11.3"
-#define FIRMWARE_DATE "2026-06-14"
+#define FIRMWARE_VERSION "7.12.0"
+#define FIRMWARE_DATE "2026-06-16"
 
 // ===================== PINS =====================      
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
@@ -1409,10 +1409,16 @@ void setup() {
       }
 
       setFanZone(restoreZone, SRC_BUTTON);
+      // [FIX-ESP-40] A fan-relé AZONNALI bekapcsolása bootkor. A setFanZone csak a
+      // break-before-make-et indítja (minden relé OFF + pendingZone); a tényleges
+      // bekapcsolás a handleZoneChange()-ben történik, de az csak RELAY_SWITCH_DELAY_MS
+      // letelte UTÁN hat. Ezért előbb kivárjuk ezt az időt, majd hívjuk — így nem a
+      // loop első iterációjára várunk a fan-relé bekapcsolásával.
+      delay(RELAY_SWITCH_DELAY_MS + 5);
       handleZoneChange();
     }
   }
-  
+
   DBG("BLE init");
   BLEDevice::init("FanController");
   pServer = BLEDevice::createServer();
