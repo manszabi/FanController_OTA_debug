@@ -1443,7 +1443,8 @@ void setup() {
   Serial.println(ESP.getFreeHeap());
 
   printBootDiag();
-
+  
+  DBG("Boot done");
   digitalWrite(LED_YELLOW, LOW);
 }
 
