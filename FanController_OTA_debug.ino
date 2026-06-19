@@ -1633,7 +1633,16 @@ void normalMode() {
   int f2 = digitalRead(RELAY_FAN2);
   int f3 = digitalRead(RELAY_FAN3);
   if ((f1 == LOW) + (f2 == LOW) + (f3 == LOW) >= 2) {
-    DBG("FAILSAFE: 2 fans LOW");
+    char e[48];
+    int n = snprintf(e, sizeof(e), "Relays");
+    if (f1 == LOW) n += snprintf(e + n, sizeof(e) - n, " 1");
+    if (f2 == LOW) n += snprintf(e + n, sizeof(e) - n, " 2");
+    if (f3 == LOW) n += snprintf(e + n, sizeof(e) - n, " 3");
+    snprintf(e + n, sizeof(e) - n, " ACTIVE ST zone=%d", currentZone);
+#if DEBUG
+    Serial.println(e);
+#endif
+    if (!diagStreaming) diagLog(e);
     zeroStateForFailsafe();  // [FIX-ESP-33] nullázás MÉG a STATE_FAILSAFE előtt
     currentState = STATE_FAILSAFE;
     return;
@@ -1953,17 +1962,12 @@ void checkFanRelayMismatch() {
 
 #if FAN_SENSE_FAILSAFE_ON_STUCK
     if (stuck && !inGrace) {
-      DBG_P("FAILSAFE: Fan");
-      Serial.print(i + 1);
-      Serial.println(F(" beragadt (van AC, de OFF) -> FAILSAFE"));
-
-      if (!diagStreaming) {
-        char e[80];
-        snprintf(e, sizeof(e), "[fanrelay] Fan%d STUCK exp=%d live=%d zone=%d t=%lus",
-                 i + 1, (int)expectedLive, (int)live, currentZone,
-                 (unsigned long)(now / 1000));
-        diagLog(e);
-      }
+      char e[48];
+      snprintf(e, sizeof(e), "Relay%d STUCK zone=%d", i + 1, currentZone);
+#if DEBUG
+      Serial.println(e);
+#endif
+      if (!diagStreaming) diagLog(e);
 
       zeroStateForFailsafe();  // [FIX-ESP-33] nullázás MÉG a STATE_FAILSAFE előtt
       currentState = STATE_FAILSAFE;
@@ -1980,13 +1984,6 @@ void checkFanRelayMismatch() {
         Serial.print(i + 1);
         Serial.println(F(" nincs AC (ON, de nincs visszajelzes) - tovabb fut"));
 
-        if (!diagStreaming) {
-          char e[80];
-          snprintf(e, sizeof(e), "[fanrelay] Fan%d NOAC exp=%d live=%d zone=%d t=%lus",
-                   i + 1, (int)expectedLive, (int)live, currentZone,
-                   (unsigned long)(now / 1000));
-          diagLog(e);
-        }
         fanNoacWarned[i] = true;  // egyszer figyelmeztetünk, amíg fennáll
       }
     } else {
