@@ -262,6 +262,7 @@ RTC_NOINIT_ATTR int errRestoreCount;
 const int MAX_ERR_RESTORE = 3;                       // ennyiedik egymást követőnél már idle
 const unsigned long ERR_RESTORE_CLEAR_MS = 30000;    // ennyi stabil futás után nullázzuk
 bool errRestoreCleared = false;
+bool restore_roller = false;
 
 Preferences fanPrefs;
 int nvsLastSavedZone = -1;             // amit utoljára NVS-be írtunk (cache, hogy ne írjunk feleslegesen)
@@ -1384,6 +1385,7 @@ void setup() {
       snprintf(e, sizeof(e), "[boot] loop-break idle n=%d", errRestoreCount);
       diagLog(e);
     } else {
+      restore_roller= true;
       DBG("Boot after BROWNOUT/UNKNOWN/WDT, roller was active → resuming");
       enableRelays();
       delay(100);
@@ -1407,6 +1409,7 @@ void setup() {
       }
 
       setFanZone(restoreZone, SRC_BUTTON);
+      handleZoneChange();
     }
   }
   
