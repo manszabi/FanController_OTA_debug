@@ -8,7 +8,7 @@
 #include "esp_sleep.h"
 #include "esp_task_wdt.h"
 #include <Update.h>
-#include "FS.h"
+#include "FS.h"    
 #include "SPIFFS.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
@@ -41,7 +41,7 @@
 #define FIRMWARE_VERSION "7.11.3"
 #define FIRMWARE_DATE "2026-06-14"
 
-// ===================== PINS =====================
+// ===================== PINS =====================      
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
 #define RELAY_FAN1 23
 #define RELAY_FAN2 22
@@ -1209,16 +1209,18 @@ void setup() {
   // Serial.begin/delay ELŐTT, mert a GPIO-hoz nem kell a Serial, viszont így a
   // legrövidebb a boot-állapot ablaka. Tápengedély LOW + minden relé OFF (aktív-LOW
   // → HIGH=ki). C6-on a GPIO17/RELAY_EN belső felhúzása miatt különösen fontos.
-  pinMode(RELAY_EN, OUTPUT);
-  digitalWrite(RELAY_EN, LOW);
+  pinMode(RELAY_EN, OUTPUT); digitalWrite(RELAY_EN, LOW);
   pinMode(RELAY_FAN1, OUTPUT);   digitalWrite(RELAY_FAN1, HIGH);
   pinMode(RELAY_FAN2, OUTPUT);   digitalWrite(RELAY_FAN2, HIGH);
   pinMode(RELAY_FAN3, OUTPUT);   digitalWrite(RELAY_FAN3, HIGH);
   pinMode(RELAY_ROLLER, OUTPUT); digitalWrite(RELAY_ROLLER, HIGH);
-
+  relaysEnabled = false;
+  
   Serial.begin(115200);
   delay(100);
 
+  DBG("GPIO + Serial init, Relays safe off done");
+  
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
   // C6: külső antenna kiválasztása a BLE rádió indítása ELŐTT (a 2,4 GHz rádiót
   // Wi-Fi/BLE/802.15.4 közösen használja, egy antenna-kapcsolóval → a BLE is ezen megy).
@@ -1228,7 +1230,18 @@ void setup() {
   pinMode(ANT_SELECT, OUTPUT);
   digitalWrite(ANT_SELECT, HIGH);          // külső antenna használata
 #endif
-
+  
+#if FAN_SENSE_ENABLE
+  pinMode(FAN1_SENSE_PIN, INPUT_PULLUP);
+  pinMode(FAN2_SENSE_PIN, INPUT_PULLUP);
+  pinMode(FAN3_SENSE_PIN, INPUT_PULLUP);
+  fanSenseGraceUntil = millis() + 3000;
+#endif
+  
+  DBG("LED boot state");
+  pinMode(LED_YELLOW, OUTPUT); digitalWrite(LED_YELLOW, HIGH);
+  pinMode(LED_RED, OUTPUT); digitalWrite(LED_RED, LOW);
+  
   ota_boot_flow();
 
   static_assert(sizeof(BLE_AUTH_PIN) > 1, "BLE_AUTH_PIN is empty!");
@@ -1324,30 +1337,6 @@ void setup() {
     DBG("Fault/SW reset → resuming normal operation");
   }
 
-  DBG("LED GPIO init");
-  pinMode(LED_YELLOW, OUTPUT);
-  pinMode(LED_RED, OUTPUT);
-
-#if FAN_SENSE_ENABLE
-  pinMode(FAN1_SENSE_PIN, INPUT_PULLUP);
-  pinMode(FAN2_SENSE_PIN, INPUT_PULLUP);
-  pinMode(FAN3_SENSE_PIN, INPUT_PULLUP);
-  fanSenseGraceUntil = millis() + 3000;
-#endif
-
-  DBG("Relays safe OFF");
-  digitalWrite(RELAY_EN, LOW);
-  delay(100);
-  digitalWrite(RELAY_FAN1, HIGH);
-  digitalWrite(RELAY_FAN2, HIGH);
-  digitalWrite(RELAY_FAN3, HIGH);
-  digitalWrite(RELAY_ROLLER, HIGH);
-  relaysEnabled = false;
-
-  DBG("LED boot");
-  digitalWrite(LED_YELLOW, HIGH);
-  digitalWrite(LED_RED, LOW);
-
   DBG("Button init");
   button.attachClick(handleClick);
   button.attachLongPressStop(handleLongPressStop);
@@ -1356,38 +1345,7 @@ void setup() {
   button.setPressTicks(2000);
   button.setClickTicks(400);
 
-  DBG("BLE init");
-  BLEDevice::init("FanController");
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
-
-  BLEService* pService = pServer->createService(SERVICE_UUID);
-  pCharacteristic = pService->createCharacteristic(
-    CHARACTERISTIC_UUID,
-    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
-
-  pCharacteristic->setCallbacks(new MyCallbacks());
-  pCharacteristic->addDescriptor(new BLE2902());
-  pService->start();
-
-  otaInitService(pServer);
-
-  BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06);
-  pAdvertising->setMaxPreferred(0x12);
-  BLEDevice::startAdvertising();
-
-  DBG("BLE ready");
-
-  lastActivityTime = millis();
-  lastHeartbeat = millis();
-
-  Serial.println();
-  DBG_P("Free heap: ");
-  Serial.println(ESP.getFreeHeap());
-
+  DBG("Relay state restore");
   fanPrefs.begin("fan", true);  // read-only
   nvsLastSavedZone = fanPrefs.getInt("zone", -1);
   nvsLastSavedRoller = fanPrefs.getInt("roller", -1);  // [FIX-ESP-30] görgő (-1 = nincs)
@@ -1451,6 +1409,38 @@ void setup() {
       setFanZone(restoreZone, SRC_BUTTON);
     }
   }
+  
+  DBG("BLE init");
+  BLEDevice::init("FanController");
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  BLEService* pService = pServer->createService(SERVICE_UUID);
+  pCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
+
+  pCharacteristic->setCallbacks(new MyCallbacks());
+  pCharacteristic->addDescriptor(new BLE2902());
+  pService->start();
+
+  otaInitService(pServer);
+
+  BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);
+  pAdvertising->setMaxPreferred(0x12);
+  BLEDevice::startAdvertising();
+
+  DBG("BLE ready");
+
+  lastActivityTime = millis();
+  lastHeartbeat = millis();
+
+  Serial.println();
+  DBG_P("Free heap: ");
+  Serial.println(ESP.getFreeHeap());
 
   printBootDiag();
 
