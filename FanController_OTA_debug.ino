@@ -38,7 +38,7 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.11.2"
+#define FIRMWARE_VERSION "7.11.3"
 #define FIRMWARE_DATE "2026-06-14"
 
 // ===================== PINS =====================
@@ -1324,12 +1324,7 @@ void setup() {
     DBG("Fault/SW reset → resuming normal operation");
   }
 
-  DBG("GPIO init");
-  pinMode(RELAY_FAN1, OUTPUT);
-  pinMode(RELAY_FAN2, OUTPUT);
-  pinMode(RELAY_FAN3, OUTPUT);
-  pinMode(RELAY_ROLLER, OUTPUT);
-  pinMode(RELAY_EN, OUTPUT);
+  DBG("LED GPIO init");
   pinMode(LED_YELLOW, OUTPUT);
   pinMode(LED_RED, OUTPUT);
 
