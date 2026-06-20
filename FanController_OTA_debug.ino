@@ -1808,6 +1808,10 @@ void setFanZone(int zone, CommandSource source) {
 
   portEXIT_CRITICAL(&zoneMux);
 
+#if FAN_SENSE_ENABLE
+  fanSenseGraceUntil = now + RELAY_SWITCH_DELAY_MS + FAN_SENSE_GRACE_MS;
+#endif
+
   DBG_P("Zone change: ");
   Serial.print(fromZone);
   Serial.print(" -> ");
@@ -1916,6 +1920,7 @@ void saveZoneToNvsIfStable() {
 #if FAN_SENSE_ENABLE
 void monitorFanRelays() {
   unsigned long now = millis();
+  bool inGrace = ((long)(fanSenseGraceUntil - now) > 0);
 
   for (int i = 0; i < 3; i++) {
     int raw = digitalRead(fanSensePins[i]);
@@ -1938,9 +1943,11 @@ void monitorFanRelays() {
       if ((unsigned long)(now - fanSenseChangeSince[i]) >= AC_SENSE_DEBOUNCE_MS) {
         fanLineLive[i] = rawLive;
         fanSenseChangeSince[i] = 0;
-        DBG_P("Fan");
-        Serial.print(i + 1);
-        Serial.println(rawLive ? F(" kimenet: VAN 230V AC") : F(" kimenet: nincs AC"));
+        if (!inGrace) {
+          DBG_P("Relay");
+          Serial.print(i + 1);
+          Serial.println(rawLive ? F(" ACTIVE") : F(" INACTIVE"));
+        }
       }
     } else {
       fanSenseChangeSince[i] = 0;
