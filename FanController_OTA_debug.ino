@@ -956,12 +956,15 @@ void handleClick() {
     enableRelays();
     delay(100);
     activateRoller();
+  } else if (currentZone != 0) {
+    // Aktív ventilátor fokozat → első gombnyomás: csak a ventilátort állítja le
+    // (görgő/relé bekapcsolva marad). A következő kattintás kapcsol ki mindent.
+    manualZoneIndex = 0;
+    setFanZone(0, SRC_BUTTON);
   } else {
-    if (currentZone == 0) {
-      deactivateRoller();
-      delay(100);
-      disableRelays();
-    }
+    deactivateRoller();
+    delay(100);
+    disableRelays();
   }
 }
 
