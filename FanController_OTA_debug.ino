@@ -444,14 +444,14 @@ void ota_boot_flow() {
   DBG_P(" address=0x");
   Serial.println(running->address, HEX);
 
-  DBG_P("Boot partition: type=");
-  Serial.print(boot->type);
-  DBG_P(" subtype=");
-  Serial.print(boot->subtype);
-  DBG_P(" address=0x");
-  Serial.println(boot->address, HEX);
-
   if (running != boot) {
+    DBG_P("Boot partition: type=");
+    Serial.print(boot->type);
+    DBG_P(" subtype=");
+    Serial.print(boot->subtype);
+    DBG_P(" address=0x");
+    Serial.println(boot->address, HEX);
+
     DBG("New firmware booted FIRST TIME → validating...");
 
     esp_err_t res = esp_ota_mark_app_valid_cancel_rollback();
@@ -473,31 +473,20 @@ void ota_boot_flow() {
   esp_err_t st = esp_ota_get_state_partition(running, &state);
 
   if (st == ESP_OK) {
-    DBG_P("OTA image state: ");
-    Serial.println(state);
-
-    bool pending = (state == ESP_OTA_IMG_NEW);
-
-    DBG_P("Rollback pending: ");
-    Serial.println(pending ? "YES" : "NO");
-
+    const char* stName;
     switch (state) {
-      case ESP_OTA_IMG_NEW:
-        DBG("Image state: NEW (not validated yet)");
-        break;
-      case ESP_OTA_IMG_VALID:
-        DBG("Image state: VALID");
-        break;
-      case ESP_OTA_IMG_INVALID:
-        DBG("Image state: INVALID");
-        break;
-      case ESP_OTA_IMG_ABORTED:
-        DBG("Image state: ABORTED");
-        break;
-      default:
-        DBG("Image state: UNDEFINED");
-        break;
+      case ESP_OTA_IMG_NEW:     stName = "NEW (not validated yet)"; break;
+      case ESP_OTA_IMG_VALID:   stName = "VALID"; break;
+      case ESP_OTA_IMG_INVALID: stName = "INVALID"; break;
+      case ESP_OTA_IMG_ABORTED: stName = "ABORTED"; break;
+      default:                  stName = "UNDEFINED"; break;
     }
+    DBG_P("OTA image state: ");
+    Serial.print(stName);
+    DBG_P(" (0x");
+    Serial.print(state, HEX);
+    DBG_P("), rollback: ");
+    Serial.println(state == ESP_OTA_IMG_NEW ? "YES" : "NO");
   } else {
     DBG_P("Failed to read OTA state: ");
     Serial.println(esp_err_to_name(st));
@@ -1113,6 +1102,9 @@ void printBootDiag() {
   Serial.println(F("BOOT DIAG (RTC / NVS / diag.log)"));
   Serial.println(F("===================================="));
 
+  Serial.print(F("Free heap: "));
+  Serial.println(ESP.getFreeHeap());
+
   Serial.print(F("RTC magic: 0x"));
   Serial.print(savedZoneMagic, HEX);
   Serial.print(F(" ("));
@@ -1447,10 +1439,6 @@ void setup() {
   lastActivityTime = millis();
   lastHeartbeat = millis();
 
-  Serial.println();
-  DBG_P("Free heap: ");
-  Serial.println(ESP.getFreeHeap());
-
   printBootDiag();
   
   DBG("Boot done");
@@ -1543,14 +1531,18 @@ void normalMode() {
     unsigned long diff = nowNormalMode - lastActivityTime;
     long remainingMs = (long)INACTIVITY_MS - (long)diff;
     if (remainingMs < 0) remainingMs = 0;
+    long remainingMin = remainingMs / 60000;
 
-    DBG_P("To sleep (min): ");
-    Serial.println(remainingMs / 60000);
-
-    DBG_P("Free heap: ");
-    Serial.print(ESP.getFreeHeap());
-    DBG_P(" / min: ");
-    Serial.println(ESP.getMinFreeHeap());
+    static long lastPrintedMin = -1;
+    if (remainingMin != lastPrintedMin) {
+      lastPrintedMin = remainingMin;
+      DBG_P("To sleep (min): ");
+      Serial.println(remainingMin);
+      DBG_P("Free heap: ");
+      Serial.print(ESP.getFreeHeap());
+      DBG_P(" / min: ");
+      Serial.println(ESP.getMinFreeHeap());
+    }
   }
 
   static bool lowHeapLogged = false;
