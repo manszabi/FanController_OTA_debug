@@ -137,7 +137,7 @@ A `OneButton` könyvtár kezeli a gombot:
 
 | Gesztus | Hatás |
 |---|---|
-| **Egyszeres kattintás** | Görgő be (relék + roller). Ha a görgő már jár és a fokozat 0, akkor görgő ki + relék ki. |
+| **Egyszeres kattintás** | Ha minden ki: relék + görgő be. Ha aktív ventilátor fokozat: a ventilátor leáll (görgő/relé bekapcsolva marad). Ha a görgő jár és a fokozat 0: görgő ki + relék ki. |
 | **Dupla kattintás** | **Kézi mód** be/léptetés. Belépéskor leállítja a BLE-t, és fokozatot léptet: 1 → 2 → 3 → 0 → 1 … |
 | **Több (>2) kattintás** | Vissza **automata módba**: ventilátor ki, BLE advertising újraindul. |
 | **Hosszú nyomás (elengedésre)** | **Deep sleep** (`src=button-longpress`). |
