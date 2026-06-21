@@ -21,20 +21,37 @@
 #define BOOT_DIAG 1
 #define FAN_SENSE_ENABLE 1
 
+// A Serial-t csak akkor inicializáljuk, ha valamelyik kimeneti csatorna aktív
+#if DEBUG || OTA_DEBUG || BOOT_DIAG
+#define SERIAL_ENABLED 1
+#else
+#define SERIAL_ENABLED 0
+#endif
+
+// Ventilátorvezérlő debug: _P/_V = print (literál/érték), sima/_VLN = println (literál/érték)
 #if DEBUG
 #define DBG(x) Serial.println(F(x))
 #define DBG_P(x) Serial.print(F(x))
+#define DBG_V(...) Serial.print(__VA_ARGS__)
+#define DBG_VLN(...) Serial.println(__VA_ARGS__)
 #else
 #define DBG(x)
 #define DBG_P(x)
+#define DBG_V(...)
+#define DBG_VLN(...)
 #endif
 
+// OTA debug: ugyanaz a séma, külön kapcsolóval
 #if OTA_DEBUG
 #define OTA_DBG(x) Serial.println(F(x))
 #define OTA_DBG_P(x) Serial.print(F(x))
+#define OTA_DBG_V(...) Serial.print(__VA_ARGS__)
+#define OTA_DBG_VLN(...) Serial.println(__VA_ARGS__)
 #else
 #define OTA_DBG(x)
 #define OTA_DBG_P(x)
+#define OTA_DBG_V(...)
+#define OTA_DBG_VLN(...)
 #endif
 
 // ===================== VERSION INFO =====================
@@ -346,7 +363,7 @@ static uint32_t crc32_zlib(const uint8_t* p, size_t n) {
 
 static void otaAbort(const String& msg) {
   DBG_P("OTA abort: ");
-  Serial.println(msg);
+  DBG_VLN(msg);
   char e[80];
   snprintf(e, sizeof(e), "[ota] abort: %.60s", msg.c_str());
   diagLog(e);
@@ -378,9 +395,7 @@ static void rebootEspWithReason(String reason) {
 
 static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) {
   OTA_DBG_P("FS write len=");
-#if OTA_DEBUG
-  Serial.println(len);
-#endif
+  OTA_DBG_VLN(len);
 
   File file = fs.open(path, FILE_APPEND);
   if (!file) {
@@ -393,17 +408,15 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
   otaWriteFile = false;
   otaReceivedBytes += written;  // [FIX-ESP-4] 2026-05-24: a TÉNYLEGESEN kiírt
   OTA_DBG_P("FS write done, total=");
-#if OTA_DEBUG
-  Serial.println(otaReceivedBytes);
-#endif
+  OTA_DBG_VLN(otaReceivedBytes);
 
   if (written < (size_t)len) {
     DBG_P("SPIFFS full! Wrote ");
-    Serial.print(written);
+    DBG_V(written);
     DBG_P(" of ");
-    Serial.print(len);
+    DBG_V(len);
     DBG_P(" bytes (SPIFFS free: ");
-    Serial.print(FLASH.totalBytes() - FLASH.usedBytes());
+    DBG_V(FLASH.totalBytes() - FLASH.usedBytes());
     DBG(")");
     DBG("Aborting OTA");
 
@@ -440,19 +453,19 @@ void ota_boot_flow() {
   DBG("=== OTA BOOT FLOW ===");
 
   DBG_P("Running partition: type=");
-  Serial.print(running->type);
+  DBG_V(running->type);
   DBG_P(" subtype=");
-  Serial.print(running->subtype);
+  DBG_V(running->subtype);
   DBG_P(" address=0x");
-  Serial.println(running->address, HEX);
+  DBG_VLN(running->address, HEX);
 
   if (running != boot) {
     DBG_P("Boot partition: type=");
-    Serial.print(boot->type);
+    DBG_V(boot->type);
     DBG_P(" subtype=");
-    Serial.print(boot->subtype);
+    DBG_V(boot->subtype);
     DBG_P(" address=0x");
-    Serial.println(boot->address, HEX);
+    DBG_VLN(boot->address, HEX);
 
     DBG("New firmware booted FIRST TIME");
   }
@@ -471,9 +484,9 @@ void ota_boot_flow() {
       default:                         stName = "UNDEFINED"; break;
     }
     DBG_P("OTA image state: ");
-    Serial.print(stName);
+    DBG_V(stName);
     DBG_P(" (0x");
-    Serial.print(state, HEX);
+    DBG_V(state, HEX);
     DBG(")");
 
     // Health-check: NE validáljuk most — a loop/enterDeepSleep majd, stabil futás után (itt a SPIFFS sincs még mountolva)
@@ -483,7 +496,7 @@ void ota_boot_flow() {
     }
   } else {
     DBG_P("Failed to read OTA state: ");
-    Serial.println(esp_err_to_name(st));
+    DBG_VLN(esp_err_to_name(st));
   }
 
   DBG("=== OTA BOOT FLOW END ===");
@@ -508,21 +521,21 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
 
   DBG("Running partition:");
-  DBG_P("  addr=0x"); Serial.print(running->address, HEX);
-  DBG_P(" size="); Serial.print(running->size);
-  DBG_P(" label="); Serial.println(running->label);
+  DBG_P("  addr=0x"); DBG_VLN(running->address, HEX);
+  DBG_P(" size="); DBG_V(running->size);
+  DBG_P(" label="); DBG_VLN(running->label);
 
   DBG("Next OTA partition:");
-  DBG_P("  addr=0x"); Serial.print(next->address, HEX);
-  DBG_P(" size="); Serial.print(next->size);
-  DBG_P(" label="); Serial.println(next->label);
+  DBG_P("  addr=0x"); DBG_VLN(next->address, HEX);
+  DBG_P(" size="); DBG_V(next->size);
+  DBG_P(" label="); DBG_VLN(next->label);
 
   DBG_P("updateSize = ");
-  Serial.println(updateSize);
+  DBG_VLN(updateSize);
 
   int magic = updateSource.peek();
   DBG_P("First byte (magic) = 0x");
-  Serial.println(magic, HEX);
+  DBG_VLN(magic, HEX);
   if (magic != 0xE9) {
     DBG("ERR: bad firmware magic (not 0xE9)");
     char m[40];
@@ -545,8 +558,8 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   bool ok = Update.begin(updateSize);
   if (!ok) {
     DBG("Update.begin FAILED!");
-    DBG_P("Error code: "); Serial.println(Update.getError());
-    DBG_P("Error string: "); Serial.println(Update.errorString());
+    DBG_P("Error code: "); DBG_VLN(Update.getError());
+    DBG_P("Error string: "); DBG_VLN(Update.errorString());
 
     result += "Update.begin FAILED: ";
     result += Update.errorString();
@@ -563,24 +576,24 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   size_t written = Update.writeStream(updateSource);
 
   DBG_P("Update.writeStream returned: ");
-  Serial.println(written);
+  DBG_VLN(written);
 
   if (written != updateSize) {
     DBG("WARNING: written != updateSize");
-    DBG_P("Expected: "); Serial.println(updateSize);
-    DBG_P("Got: "); Serial.println(written);
+    DBG_P("Expected: "); DBG_VLN(updateSize);
+    DBG_P("Got: "); DBG_VLN(written);
   }
 
   DBG("Calling Update.end()...");
   bool endOK = Update.end();
 
   DBG_P("Update.end() returned: ");
-  Serial.println(endOK ? "true" : "false");
+  DBG_VLN(endOK ? "true" : "false");
 
   if (!endOK) {
     DBG("Update.end FAILED");
-    DBG_P("Error code: "); Serial.println(Update.getError());
-    DBG_P("Error string: "); Serial.println(Update.errorString());
+    DBG_P("Error code: "); DBG_VLN(Update.getError());
+    DBG_P("Error string: "); DBG_VLN(Update.errorString());
 
     result += "Update.end FAILED: ";
     result += Update.errorString();
@@ -592,7 +605,7 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   }
 
   DBG_P("Update.isFinished(): ");
-  Serial.println(Update.isFinished() ? "true" : "false");
+  DBG_VLN(Update.isFinished() ? "true" : "false");
 
   if (!Update.isFinished()) {
     DBG("ERROR: Update not finished!");
@@ -719,7 +732,7 @@ class MyCallbacks : public BLECharacteristicCallbacks {
     if (val.startsWith("AUTH:")) {
       DBG("AUTH:****");
     } else {
-      Serial.println(val);
+      DBG_VLN(val);
     }
 
     if (val.startsWith("AUTH:")) {
@@ -779,7 +792,7 @@ class MyCallbacks : public BLECharacteristicCallbacks {
       portEXIT_CRITICAL(&bleCmdMux);
 
       DBG_P("Zone queued: ");
-      Serial.println(zone);
+      DBG_VLN(zone);
 
     } else if (val.startsWith("ROLLER:")) {
       String correctPin = BLE_AUTH_PIN;
@@ -808,7 +821,7 @@ class MyCallbacks : public BLECharacteristicCallbacks {
       portEXIT_CRITICAL(&bleCmdMux);
 
       DBG_P("Roller queued: ");
-      Serial.println(rollerCmd);
+      DBG_VLN(rollerCmd);
 
     } else if (val.startsWith("DIAG?")) {
       String correctPin = BLE_AUTH_PIN;
@@ -857,7 +870,7 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
 
     } else if (pData[0] == 0xFC) {
       OTA_DBG_P("0xFC part=");
-      Serial.println((pData[3] * 256) + pData[4]);
+      OTA_DBG_VLN((pData[3] * 256) + pData[4]);
       if (len < 9) {
         DBG("0xFC too short (no CRC) — re-requesting part");
         otaPartRetry++;
@@ -886,17 +899,17 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
       otaTotalBytes = ((uint32_t)pData[1] << 24) | ((uint32_t)pData[2] << 16) | ((uint32_t)pData[3] << 8) | ((uint32_t)pData[4]);
       uint32_t fsFree = FLASH.totalBytes() - FLASH.usedBytes();
       DBG_P("FS free: ");
-      Serial.println(fsFree);
+      DBG_VLN(fsFree);
       DBG_P("OTA size: ");
-      Serial.println(otaTotalBytes);
+      DBG_VLN(otaTotalBytes);
 
       const uint32_t SPIFFS_OVERHEAD = 4096;
       if (otaTotalBytes + SPIFFS_OVERHEAD > fsFree) {
         DBG("ERR: SPIFFS too small for OTA");
         DBG_P("Need (with overhead): ");
-        Serial.println(otaTotalBytes + SPIFFS_OVERHEAD);
+        DBG_VLN(otaTotalBytes + SPIFFS_OVERHEAD);
         DBG_P("Available: ");
-        Serial.println(fsFree);
+        DBG_VLN(fsFree);
 
         if (pOtaTx) {
           String result = String((char)0x0F) + "ERR: SPIFFS too small (need " + String(otaTotalBytes + SPIFFS_OVERHEAD) + ", have " + String(fsFree) + ")";
@@ -925,7 +938,7 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
       } else {
         otaMode = OTA_UPDATE_MODE;
         DBG_P("OTA parts: ");
-        Serial.println(otaParts);
+        DBG_VLN(otaParts);
         if (pOtaTx) {
           uint8_t rq[] = { 0xF1, 0x00, 0x00 };
           pOtaTx->setValue(rq, 3);
@@ -1202,8 +1215,10 @@ void setup() {
   pinMode(RELAY_ROLLER, OUTPUT); digitalWrite(RELAY_ROLLER, HIGH);
   relaysEnabled = false;
   
+#if SERIAL_ENABLED
   Serial.begin(115200);
   delay(100);
+#endif
 
   DBG("GPIO + Serial init, Relays safe off done");
   
@@ -1267,28 +1282,30 @@ void setup() {
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
   bootMagic = BOOT_MAGIC;
 
-  Serial.println();
-  Serial.println(F("===================================="));
-  Serial.println(F("Xiao ESP32C3 Fan + Roller + OTA"));
-  Serial.print(F("FW: v"));
-  Serial.print(F(FIRMWARE_VERSION));
-  Serial.print(F(" ("));
-  Serial.print(F(FIRMWARE_DATE));
-  Serial.println(F(")"));
-  Serial.print(F("Reset reason: "));
-  Serial.print((int)resetReason);
-  Serial.print(F(" ("));
-  Serial.print(resetReasonStr(resetReason));
-  Serial.println(F(")"));
-  Serial.println(F("===================================="));
+  DBG("");
+  DBG("====================================");
+  DBG("Xiao ESP32C3 Fan + Roller + OTA");
+  DBG_P("FW: v");
+  DBG_P(FIRMWARE_VERSION);
+  DBG_P(" (");
+  DBG_P(FIRMWARE_DATE);
+  DBG(")");
+  DBG_P("Reset reason: ");
+  DBG_V((int)resetReason);
+  DBG_P(" (");
+  DBG_V(resetReasonStr(resetReason));
+  DBG(")");
+  DBG("====================================");
 
+#if DEBUG
   {
     const uint8_t tv[] = { '1','2','3','4','5','6','7','8','9' };
     uint32_t got = crc32_zlib(tv, 9);
-    Serial.print(F("CRC32 self-test: 0x"));
-    Serial.print(got, HEX);
-    Serial.println(got == 0xCBF43926 ? F(" OK") : F(" FAIL!"));
+    DBG_P("CRC32 self-test: 0x");
+    DBG_V(got, HEX);
+    DBG_VLN(got == 0xCBF43926 ? F(" OK") : F(" FAIL!"));
   }
+#endif
 
   if (resetReason != ESP_RST_POWERON &&
       resetReason != ESP_RST_DEEPSLEEP &&
@@ -1305,7 +1322,9 @@ void setup() {
       DBG("Wake: button");
     } else {
       DBG("Deep sleep wake (no button) → back to sleep");
+#if SERIAL_ENABLED
       Serial.flush();
+#endif
       delay(100);
       pinMode(BUTTON_PIN, INPUT_PULLUP);
       esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
@@ -1313,7 +1332,9 @@ void setup() {
     }
   } else if (resetReason == ESP_RST_POWERON) {
     DBG("Power-on → sleep (wait for button)");
+#if SERIAL_ENABLED
     Serial.flush();
+#endif
     delay(100);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
     esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
@@ -1361,8 +1382,8 @@ void setup() {
     } else if (++errRestoreCount >= MAX_ERR_RESTORE) {
       // Túl sok gyors hibás reset (brownout-hurok gyanú) → nem állítunk vissza, idle marad; a számláló 30 s stabil futás után nullázódik
       DBG_P("Loop-break: consecutive error-restores=");
-      Serial.print(errRestoreCount);
-      Serial.println(" → staying idle");
+      DBG_V(errRestoreCount);
+      DBG(" → staying idle");
       char e[64];
       snprintf(e, sizeof(e), "[boot] loop-break idle n=%d", errRestoreCount);
       diagLog(e);
@@ -1380,11 +1401,11 @@ void setup() {
       if (rtcValid) {
         restoreZone = savedZone;
         DBG_P("Restoring fan zone (RTC valid, freshest): ");
-        Serial.println(restoreZone);
+        DBG_VLN(restoreZone);
       } else if (nvsValid) {
         restoreZone = nvsLastSavedZone;
         DBG_P("Restoring fan zone (RTC invalid, NVS fallback): ");
-        Serial.println(restoreZone);
+        DBG_VLN(restoreZone);
       } else {
         restoreZone = 2;
         DBG("Both RTC and NVS invalid → defaulting to zone 2");
@@ -1452,7 +1473,7 @@ void loop() {
       diagLog("[ota] healthcheck OK -> valid");
     } else {
       DBG_P("OTA mark valid FAILED: ");
-      Serial.println(esp_err_to_name(r));
+      DBG_VLN(esp_err_to_name(r));
     }
   }
 
@@ -1534,11 +1555,11 @@ void normalMode() {
     if (remainingMin != lastPrintedMin) {
       lastPrintedMin = remainingMin;
       DBG_P("To sleep (min): ");
-      Serial.println(remainingMin);
+      DBG_VLN(remainingMin);
       DBG_P("Free heap: ");
-      Serial.print(ESP.getFreeHeap());
+      DBG_V(ESP.getFreeHeap());
       DBG_P(" / min: ");
-      Serial.println(ESP.getMinFreeHeap());
+      DBG_VLN(ESP.getMinFreeHeap());
     }
   }
 
@@ -1628,9 +1649,7 @@ void normalMode() {
     if (f2 == LOW) n += snprintf(e + n, sizeof(e) - n, " 2");
     if (f3 == LOW) n += snprintf(e + n, sizeof(e) - n, " 3");
     snprintf(e + n, sizeof(e) - n, " ACTIVE ST zone=%d", currentZone);
-#if DEBUG
-    Serial.println(e);
-#endif
+    DBG_VLN(e);
     if (!diagStreaming) diagLog(e);
     zeroStateForFailsafe();  // [FIX-ESP-33] nullázás MÉG a STATE_FAILSAFE előtt
     currentState = STATE_FAILSAFE;
@@ -1802,9 +1821,9 @@ void setFanZone(int zone, CommandSource source) {
 #endif
 
   DBG_P("Zone change: ");
-  Serial.print(fromZone);
-  Serial.print(" -> ");
-  Serial.println(zone);
+  DBG_V(fromZone);
+  DBG_P(" -> ");
+  DBG_VLN(zone);
 }
 
 void handleZoneChange() {
@@ -1896,12 +1915,12 @@ void saveZoneToNvsIfStable() {
 
   if (zoneNeedsWrite) {
     DBG_P("NVS zone saved: ");
-    Serial.print(z);
-    Serial.println((forceSave && !stableSave) ? " (force 5min)" : " (stable 30s)");
+    DBG_V(z);
+    DBG_VLN((forceSave && !stableSave) ? " (force 5min)" : " (stable 30s)");
   }
   if (rollerNeedsWrite) {
     DBG_P("NVS roller saved: ");
-    Serial.println(rollerNow);
+    DBG_VLN(rollerNow);
   }
 }
 
@@ -1934,8 +1953,8 @@ void monitorFanRelays() {
         fanSenseChangeSince[i] = 0;
         if (!inGrace) {
           DBG_P("Relay");
-          Serial.print(i + 1);
-          Serial.println(rawLive ? F(" ACTIVE") : F(" INACTIVE"));
+          DBG_V(i + 1);
+          DBG_VLN(rawLive ? F(" ACTIVE") : F(" INACTIVE"));
         }
       }
     } else {
@@ -1960,9 +1979,7 @@ void checkFanRelayMismatch() {
     if (stuck && !inGrace) {
       char e[48];
       snprintf(e, sizeof(e), "Relay%d STUCK zone=%d", i + 1, currentZone);
-#if DEBUG
-      Serial.println(e);
-#endif
+      DBG_VLN(e);
       if (!diagStreaming) diagLog(e);
 
       zeroStateForFailsafe();  // [FIX-ESP-33] nullázás MÉG a STATE_FAILSAFE előtt
@@ -1977,8 +1994,8 @@ void checkFanRelayMismatch() {
       if (!fanNoacWarned[i] &&
           (unsigned long)(now - fanMismatchSince[i]) >= FAN_SENSE_MISMATCH_CONFIRM_MS) {
         DBG_P("FIGYELEM: Fan");
-        Serial.print(i + 1);
-        Serial.println(F(" nincs AC (ON, de nincs visszajelzes) - tovabb fut"));
+        DBG_V(i + 1);
+        DBG(" nincs AC (ON, de nincs visszajelzes) - tovabb fut");
 
         fanNoacWarned[i] = true;  // egyszer figyelmeztetünk, amíg fennáll
       }
@@ -2106,11 +2123,11 @@ void handleLEDs(unsigned long currentMillis) {
 
 // ===================== DEEP SLEEP =====================
 void enterDeepSleep(const char* reason) {
-  Serial.println(F("===================================="));
-  Serial.println(F("Enter deep sleep"));
-  Serial.print(F("Reason: "));
-  Serial.println(reason);
-  Serial.println(F("===================================="));
+  DBG("====================================");
+  DBG("Enter deep sleep");
+  DBG_P("Reason: ");
+  DBG_VLN(reason);
+  DBG("====================================");
 
   // OTA health-check: a kontrollált deep sleep elérése = működő firmware → validálunk (PENDING_VERIFY-ben ébredés különben rollbackot váltana)
   if (otaPendingVerify) {
@@ -2153,7 +2170,9 @@ void enterDeepSleep(const char* reason) {
   esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
 
   delay(500);       // [FIX-ESP-23] ESP stabilizáció a deep sleep előtt
+#if SERIAL_ENABLED
   Serial.flush();
+#endif
   esp_deep_sleep_start();
 }
 
@@ -2212,10 +2231,10 @@ void otaLoop() {
           otaWriteFile = false;
           otaPartRetry++;
           DBG_P("OTA CRC fail part=");
-          Serial.print(otaCur);
-          DBG_P(" got=0x"); Serial.print(crc, HEX);
-          DBG_P(" exp=0x"); Serial.print(otaExpectedCrc, HEX);
-          DBG_P(" try="); Serial.println(otaPartRetry);
+          DBG_V(otaCur);
+          DBG_P(" got=0x"); DBG_V(crc, HEX);
+          DBG_P(" exp=0x"); DBG_V(otaExpectedCrc, HEX);
+          DBG_P(" try="); DBG_VLN(otaPartRetry);
 
           if (otaPartRetry <= MAX_PART_RETRY) {
             char e[72];
@@ -2279,9 +2298,9 @@ void otaLoop() {
       } else if (otaTotalBytes > 0) {
         DBG("OTA incomplete");
         DBG_P("Expected: ");
-        Serial.println(otaTotalBytes);
+        DBG_VLN(otaTotalBytes);
         DBG_P("Received: ");
-        Serial.println(otaReceivedBytes);
+        DBG_VLN(otaReceivedBytes);
         otaInstallWaiting = true;
         otaInstallWaitUntil = millis() + 2000;
       }
