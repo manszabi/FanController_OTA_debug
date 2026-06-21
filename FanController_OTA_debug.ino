@@ -121,15 +121,15 @@ static const char* TAG = "OTA_BOOT";
 static BLECharacteristic* pOtaTx = nullptr;
 static BLECharacteristic* pOtaRx = nullptr;
 
-static bool otaDeviceConnected = false;
-static bool otaSendSize = true;
-static bool otaWriteFile = false;
+static bool otaDeviceConnected = false;  // BLE OTA-kliens csatlakozva
+static bool otaSendSize = true;           // küldjük-e a flash-méretet a kliensnek
+static bool otaWriteFile = false;         // van-e CRC-OK, kiírásra váró part
 static int otaWriteLen = 0;            // [FIX-ESP-38] az aktuális part hossza (egy buffer)
-static int otaParts = 0, otaCur = 0, otaMTU = 0;
-static int otaMode = OTA_NORMAL_MODE;
-unsigned long otaReceivedBytes = 0, otaTotalBytes = 0;
-unsigned long otaLedTimer = 0;
-bool otaLedState = false;
+static int otaParts = 0, otaCur = 0, otaMTU = 0;  // összes part / aktuális part / part-méret
+static int otaMode = OTA_NORMAL_MODE;     // OTA állapotgép: NORMAL / UPDATE / INSTALL
+unsigned long otaReceivedBytes = 0, otaTotalBytes = 0;  // eddig kiírt / várt összes byte
+unsigned long otaLedTimer = 0;            // OTA-villogás időzítő
+bool otaLedState = false;                 // OTA-villogás LED állapot
 
 static uint32_t otaExpectedCrc = 0;    // a 0xFC-ben kapott elvárt CRC32
 static int otaPartRetry = 0;           // aktuális part újraküldés-számláló
@@ -139,10 +139,7 @@ static int otaExpectedPart = 0;
 bool otaPendingReboot = false;
 unsigned long otaRebootAt = 0;
 
-// [OTA health-check] Frissen OTA-zott, még meg nem erősített (PENDING_VERIFY)
-// firmware-nél igaz. A loop csak OTA_VERIFY_HEALTHY_MS stabil futás után jelöli
-// érvényesnek (vagy egy kontrollált deep sleep előtt) — addig boot-/futáshiba
-// esetén a bootloader visszagörget az előző jó verzióra.
+// [OTA health-check] true: frissen OTA-zott, még meg nem erősített (PENDING_VERIFY) firmware fut
 bool otaPendingVerify = false;
 
 bool otaInstallWaiting = false;
@@ -169,14 +166,14 @@ enum SystemState {
   STATE_FAILSAFE
 };
 
-SystemState currentState = STATE_NORMAL;
+SystemState currentState = STATE_NORMAL;  // fő állapotgép: NORMAL / FAILSAFE
 
 unsigned long lastCheck = 0;
-const unsigned long checkInterval = 20;
+const unsigned long checkInterval = 20;    // állapotgép-lépés periódusa (ms)
 unsigned long lastBlink = 0;
 const unsigned long blinkInterval = 100;
 bool blinkState = false;
-unsigned long failStart = 0;
+unsigned long failStart = 0;               // failsafe belépés ideje (timeout-hoz)
 bool failStartSet = false;
 
 volatile BleCommand bleCmd = { false, 0, false, 0 };
@@ -219,11 +216,11 @@ volatile bool bleEnabled = true;
 
 OneButton button(BUTTON_PIN, true, true);
 
-int currentZone = 0;
-int manualZoneIndex = 0;
-bool rollerActive = false;
-bool relaysEnabled = false;
-bool manualMode = false;
+int currentZone = 0;                   // aktív ventilátor fokozat (0=ki, 1..3)
+int manualZoneIndex = 0;               // kézi módban a léptetett fokozat (dupla kattintás)
+bool rollerActive = false;             // görgő-relé aktív
+bool relaysEnabled = false;            // tápengedély (RELAY_EN) be
+bool manualMode = false;               // kézi (gombos) mód, BLE nélkül
 esp_reset_reason_t lastBootResetReason = ESP_RST_UNKNOWN;  // [FIX-ESP-19] boot reset-ok mentése
 
 volatile unsigned long lastActivityTime = 0;
@@ -238,9 +235,9 @@ bool heartbeatPulse_red = false;
 volatile bool bleNeedsRestart = false;
 volatile unsigned long bleRestartTime = 0;
 
-bool zoneChangeInProgress = false;
-unsigned long zoneChangeStart = 0;
-int pendingZone = 0;
+bool zoneChangeInProgress = false;     // folyamatban lévő break-before-make fokozatváltás
+unsigned long zoneChangeStart = 0;     // a váltás indításának ideje (ms)
+int pendingZone = 0;                   // a váltás célfokozata (handleZoneChange élesíti)
 
 unsigned long lastPrint1 = 0;
 unsigned long lastPrint2 = 0;
@@ -259,11 +256,9 @@ RTC_NOINIT_ATTR uint32_t savedRollerMagic;
 RTC_NOINIT_ATTR int savedRoller;       // 1 = aktív volt, 0 = nem
 #define SAVED_ROLLER_MAGIC 0xF0117E55
 
-// [FIX-ESP-39] Hibás-reset hurok-megszakító. Számolja az egymást követő, gyors
-// hibás reset + visszaállítás eseményeket (RTC-ben). Ha rövid időn belül eléri a
-// limitet, a boot nem állítja vissza a görgőt/ventit → megszakad a brownout-hurok.
+// [FIX-ESP-39] Hibás-reset hurok-megszakító: gyors ismétlődő hibás resetnél a boot nem állít vissza → megszakad a brownout-hurok
 RTC_NOINIT_ATTR uint32_t errRestoreMagic;
-RTC_NOINIT_ATTR int errRestoreCount;
+RTC_NOINIT_ATTR int errRestoreCount;       // egymást követő gyors hibás resetek száma (RTC)
 #define ERR_RESTORE_MAGIC 0x10075EED
 const int MAX_ERR_RESTORE = 3;                       // ennyiedik egymást követőnél már idle
 const unsigned long ERR_RESTORE_CLEAR_MS = 30000;    // ennyi stabil futás után nullázzuk
@@ -481,10 +476,7 @@ void ota_boot_flow() {
     Serial.print(state, HEX);
     DBG(")");
 
-    // Health-check: frissen OTA-zott, még meg nem erősített firmware → NE
-    // validáljuk most. A loop OTA_VERIFY_HEALTHY_MS stabil futás után (vagy az
-    // enterDeepSleep alvás előtt) jelöli érvényesnek. (Itt nincs diagLog: a
-    // SPIFFS még nincs mountolva.)
+    // Health-check: NE validáljuk most — a loop/enterDeepSleep majd, stabil futás után (itt a SPIFFS sincs még mountolva)
     if (state == ESP_OTA_IMG_PENDING_VERIFY) {
       otaPendingVerify = true;
       DBG("PENDING_VERIFY → health-check: validalas stabil futas utan");
@@ -959,8 +951,7 @@ void handleClick() {
     delay(100);
     activateRoller();
   } else if (currentZone != 0) {
-    // Aktív ventilátor fokozat → első gombnyomás: csak a ventilátort állítja le
-    // (görgő/relé bekapcsolva marad). A következő kattintás kapcsol ki mindent.
+    // Aktív ventilátor → első gombnyomás csak a ventilátort állítja le (görgő/relé marad); a következő kattintás kapcsol ki mindent
     manualZoneIndex = 0;
     setFanZone(0, SRC_BUTTON);
   } else {
@@ -1203,10 +1194,7 @@ void handleDiagRequest() {
 
 // ===================== SETUP =====================
 void setup() {
-  // [FIX-ESP-39] Relék AZONNALI tiltása a setup() LEGELSŐ lépéseként — még a
-  // Serial.begin/delay ELŐTT, mert a GPIO-hoz nem kell a Serial, viszont így a
-  // legrövidebb a boot-állapot ablaka. Tápengedély LOW + minden relé OFF (aktív-LOW
-  // → HIGH=ki). C6-on a GPIO17/RELAY_EN belső felhúzása miatt különösen fontos.
+  // [FIX-ESP-39] Relék azonnali tiltása a setup() legelső lépéseként (Serial előtt) → legrövidebb boot-ablak: tápengedély LOW + minden relé OFF
   pinMode(RELAY_EN, OUTPUT); digitalWrite(RELAY_EN, LOW);
   pinMode(RELAY_FAN1, OUTPUT);   digitalWrite(RELAY_FAN1, HIGH);
   pinMode(RELAY_FAN2, OUTPUT);   digitalWrite(RELAY_FAN2, HIGH);
@@ -1220,8 +1208,7 @@ void setup() {
   DBG("GPIO + Serial init, Relays safe off done");
   
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
-  // C6: külső antenna kiválasztása a BLE rádió indítása ELŐTT (a 2,4 GHz rádiót
-  // Wi-Fi/BLE/802.15.4 közösen használja, egy antenna-kapcsolóval → a BLE is ezen megy).
+  // C6: külső antenna kiválasztása a BLE rádió indítása előtt (közös 2,4 GHz antenna-kapcsoló)
   pinMode(RF_SWITCH_EN, OUTPUT);
   digitalWrite(RF_SWITCH_EN, LOW);         // RF switch control aktiválás
   delay(100);
@@ -1372,9 +1359,7 @@ void setup() {
     if (rollerWas != 1) {
       DBG("Boot after error reset, roller was NOT active → staying idle");
     } else if (++errRestoreCount >= MAX_ERR_RESTORE) {
-      // Túl sok egymást követő, gyors hibás reset → valószínű brownout-hurok.
-      // NEM állítunk vissza: maradunk idle, így az eszköz vezérelhető és a hurok
-      // megszakad. A számláló 30 s stabil futás után (loop) nullázódik.
+      // Túl sok gyors hibás reset (brownout-hurok gyanú) → nem állítunk vissza, idle marad; a számláló 30 s stabil futás után nullázódik
       DBG_P("Loop-break: consecutive error-restores=");
       Serial.print(errRestoreCount);
       Serial.println(" → staying idle");
@@ -1406,11 +1391,7 @@ void setup() {
       }
 
       setFanZone(restoreZone, SRC_BUTTON);
-      // [FIX-ESP-40] A fan-relé AZONNALI bekapcsolása bootkor. A setFanZone csak a
-      // break-before-make-et indítja (minden relé OFF + pendingZone); a tényleges
-      // bekapcsolás a handleZoneChange()-ben történik, de az csak RELAY_SWITCH_DELAY_MS
-      // letelte UTÁN hat. Ezért előbb kivárjuk ezt az időt, majd hívjuk — így nem a
-      // loop első iterációjára várunk a fan-relé bekapcsolásával.
+      // [FIX-ESP-40] Fan-relé azonnali bekapcsolása bootkor: a setFanZone csak indítja a váltást, a handleZoneChange RELAY_SWITCH_DELAY_MS után hat → kivárjuk, majd hívjuk
       delay(RELAY_SWITCH_DELAY_MS + 5);
       handleZoneChange();
     }
@@ -1455,18 +1436,14 @@ void loop() {
   esp_task_wdt_reset();
   unsigned long now2 = millis();
 
-  // [FIX-ESP-39] Ha az eszköz ERR_RESTORE_CLEAR_MS ideje stabilan fut (nem hurkol),
-  // nullázzuk a hibás-reset számlálót → egy későbbi, magányos hibás reset megint
-  // normálisan visszaállít. Csak a gyors (30 s-en belül ismétlődő) reseteket számoljuk.
+  // [FIX-ESP-39] ERR_RESTORE_CLEAR_MS stabil futás után nullázzuk a hibás-reset számlálót (csak a gyors, ismétlődő reseteket számoljuk)
   if (!errRestoreCleared && now2 >= ERR_RESTORE_CLEAR_MS) {
     errRestoreCount = 0;
     errRestoreMagic = ERR_RESTORE_MAGIC;
     errRestoreCleared = true;
   }
 
-  // OTA health-check: frissen OTA-zott firmware csak OTA_VERIFY_HEALTHY_MS stabil
-  // futás után jelöli magát érvényesnek. Ha előbb újraindul (panic/WDT/brownout),
-  // a bootloader visszagörget az előző jó verzióra.
+  // OTA health-check: csak OTA_VERIFY_HEALTHY_MS stabil futás után validál; ha előbb újraindul, a bootloader visszagörget
   if (otaPendingVerify && now2 >= OTA_VERIFY_HEALTHY_MS) {
     esp_err_t r = esp_ota_mark_app_valid_cancel_rollback();
     otaPendingVerify = false;
@@ -2135,9 +2112,7 @@ void enterDeepSleep(const char* reason) {
   Serial.println(reason);
   Serial.println(F("===================================="));
 
-  // OTA health-check: egy kontrollált deep sleep elérése is bizonyítja, hogy a
-  // firmware működik. Validáljuk most, különben a PENDING_VERIFY állapotban való
-  // ébredés rollbackot váltana ki egy egyébként jó firmware-en.
+  // OTA health-check: a kontrollált deep sleep elérése = működő firmware → validálunk (PENDING_VERIFY-ben ébredés különben rollbackot váltana)
   if (otaPendingVerify) {
     esp_ota_mark_app_valid_cancel_rollback();
     otaPendingVerify = false;
