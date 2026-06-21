@@ -85,6 +85,11 @@
 // Az AC-érzékelés a relék BONTÓ (NC) érintkezőjén van. A ventilátor soros tekercsei
 // miatt egy aktív fokozatnál minden ágon megjelenik az AC, ezért a kimenet (NO) figyelése
 // nem megkülönböztethető — a bontó-érintkező adja, melyik relé NINCS behúzva.
+// Detektálás: a H11AA1M a bemenetén lévő AC-ra LOW-t húz (vezet az opto), AC nélkül a
+// felhúzó HIGH. Ezért az AC jelenlétét MINDIG a LOW mintából állapítjuk meg (volt-e LOW
+// az ablakban) — ez független az opto-kimeneti RC-szűrőtől, így a szűrőkondi
+// kiszáradása/szakadása esetén SEM ad téves eredményt (a régi HIGH-szint figyelés a
+// nullátmeneti tüskéktől megzavarodott volna).
 #if FAN_SENSE_ENABLE
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
 #define FAN1_SENSE_PIN 19    // D? — Fan1 (RELAY_FAN1) bontó (NC) érintkezőjének figyelése
@@ -95,7 +100,9 @@
 #define FAN2_SENSE_PIN 7    // D5 — Fan2 (RELAY_FAN2) bontó (NC) érintkezőjének figyelése
 #define FAN3_SENSE_PIN 20   // D7 — Fan3 (RELAY_FAN3) bontó (NC) érintkezőjének figyelése
 #endif
-#define FAN_SENSE_ACTIVE_LOW 0   // bontó-érintkezőn fordított a logika: 0 = HIGH jelenti az aktív AC-mintát
+// Mit jelent az AC a sense-ágon: 0 = NC (bontó) bekötés → AC ⇒ a relé NINCS behúzva
+// (jelenlegi HW); 1 = NO (kimenet) bekötés → AC ⇒ a relé behúzva (régi HW).
+#define FAN_SENSE_AC_MEANS_ENGAGED 0
 
 const uint8_t fanSensePins[3] = { FAN1_SENSE_PIN, FAN2_SENSE_PIN, FAN3_SENSE_PIN };
 
@@ -106,10 +113,10 @@ const unsigned long FAN_SENSE_MISMATCH_CONFIRM_MS = 1000;
 #define FAN_SENSE_FAILSAFE_ON_STUCK 1   // STUCK → STATE_FAILSAFE (azonnal, türelmi idő után)
 #define FAN_SENSE_WARN_ON_NOAC      1   // NOAC  → figyelmeztetés + diag.log (failsafe NÉLKÜL)
 
-unsigned long fanSenseLastActive[3] = { 0, 0, 0 };   // utolsó aktív minta ideje (ms); az aktív szintet FAN_SENSE_ACTIVE_LOW adja
+unsigned long fanSenseLastLow[3] = { 0, 0, 0 };       // utolsó LOW (AC-vezetés) minta ideje (ms)
 bool fanRelayEngaged[3] = { false, false, false };        // SZŰRT állapot: TRUE = az adott relé behúzva (NC nyitva, a fokozat aktív)
 unsigned long fanSenseChangeSince[3] = { 0, 0, 0 };   // mióta tér el a nyers a szűrttől (debounce)
-bool fanSenseSeen[3] = { false, false, false };       // láttunk-e már valaha aktív mintát
+bool fanSenseSeen[3] = { false, false, false };       // láttunk-e már valaha LOW (AC) mintát
 unsigned long fanSenseGraceUntil = 0;                 // eddig nem értékelünk eltérést
 unsigned long fanMismatchSince[3] = { 0, 0, 0 };      // NOAC: mióta áll fenn az eltérés (0 = nincs)
 bool fanNoacWarned[3] = { false, false, false };      // NOAC: figyelmeztettünk-e már (ne spammeljen)
@@ -1935,19 +1942,24 @@ void monitorFanRelays() {
 
   for (int i = 0; i < 3; i++) {
     int raw = digitalRead(fanSensePins[i]);
-#if FAN_SENSE_ACTIVE_LOW
-    bool activeSample = (raw == LOW);
-#else
-    bool activeSample = (raw == HIGH);
-#endif
 
-    if (activeSample) {
-      fanSenseLastActive[i] = now;
+    // AC a sense-ágon = volt-e LOW (opto-vezetés) az ablakban. A LOW mintára épülünk,
+    // mert AC jelenlétében a jel — RC-szűréssel stabil LOW, anélkül tüskés, de túlnyomóan
+    // LOW — mindig ad LOW mintát; a (nullátmeneti) HIGH-tüskéket szándékosan ignoráljuk,
+    // így a kimeneti szűrőkondi kiesése sem ad téves eredményt.
+    if (raw == LOW) {
+      fanSenseLastLow[i] = now;
       fanSenseSeen[i] = true;
     }
+    bool acOnSense = fanSenseSeen[i] &&
+                     ((unsigned long)(now - fanSenseLastLow[i]) < AC_SENSE_WINDOW_MS);
 
-    bool rawEngaged = fanSenseSeen[i] &&
-                   ((unsigned long)(now - fanSenseLastActive[i]) < AC_SENSE_WINDOW_MS);
+    // Bekötés-függő leképezés „relé behúzva"-ra (NC: AC ⇒ nincs behúzva; NO: AC ⇒ behúzva).
+#if FAN_SENSE_AC_MEANS_ENGAGED
+    bool rawEngaged = acOnSense;
+#else
+    bool rawEngaged = !acOnSense;
+#endif
 
     if (rawEngaged != fanRelayEngaged[i]) {
       if (fanSenseChangeSince[i] == 0) fanSenseChangeSince[i] = now;

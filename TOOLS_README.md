@@ -200,6 +200,6 @@ Figyeld az `otaLoop()` vagy `stateMachineStep()` sorát, ha "leállást" suspect
 
 - **v7.6.3**: Diag napló bevezetése (reset ok, lowmem, sleep source)
 - **v7.6.4**: OTA magic-byte ellenőrzés a félrevezető "Decryption error" helyett
-- **v7.13.0**: AC-érzékelés a relé **bontó (NC) érintkezőjére** került (soros fan-tekercsek miatt) → `FAN_SENSE_ACTIVE_LOW=0`; a STUCK/NOAC diag-naplózás változatlan. A **soros kimenet egységesítve**: `Serial.begin` csak `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` valamelyikénél.
+- **v7.13.0**: AC-érzékelés a relé **bontó (NC) érintkezőjére** került (soros fan-tekercsek miatt), bekötés-leképezés a `FAN_SENSE_AC_MEANS_ENGAGED=0` makróval; a detektálás **LOW-alapú**, így az opto-kimeneti RC-szűrő kiesése sem ad téves STUCK-ot. A STUCK/NOAC diag-naplózás változatlan. A **soros kimenet egységesítve**: `Serial.begin` csak `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` valamelyikénél.
 
 Frissítés után a diag napló `[sleep]`, `[boot]`, `[lowmem]`, `[ota]` sorokat fogja rögzíteni.

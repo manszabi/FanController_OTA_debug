@@ -118,24 +118,31 @@ passzív alkatrészek kerültek:
 > **relénként egyedileg** tükrözi az adott relé saját kapcsolási állapotát,
 > függetlenül attól, merre folyik az AC a kimeneteken.
 >
-> Emiatt a logika polaritása fordított: **`FAN_SENSE_ACTIVE_LOW` alapból `0`**.
-> Ezzel a `fanRelayEngaged[i]` jelentése változatlan marad – „az `i`. fokozat aktív" –,
-> így az alábbi `elvárt vs. mért` failsafe-logika érintetlen, továbbra is helyes.
+> A sense-jelet a `FAN_SENSE_AC_MEANS_ENGAGED` makró képezi le „relé behúzva"-ra
+> (**alapból `0`**: NC-bekötés → AC a sense-ágon ⇒ a relé **NINCS** behúzva). Így a
+> `fanRelayEngaged[i]` jelentése „az `i`. fokozat aktív" marad, és az alábbi
+> `elvárt vs. mért` failsafe-logika érintetlen, továbbra is helyes.
 
-**FONTOS — miért nem elég egy `digitalRead`:** a H11AA1M bemenetén antiparallel
-LED-pár van, ami az AC **mindkét** félhullámán vezet, **kivéve a nullátmenetek
-körül**. Ezért a jel 230V AC jelenlétében **nem folyamatos**, hanem ~**100 Hz**-cel
-(50 Hz hálózat → félhullámonként egyszer) rövid időre átbillen. A program ezért
-**idő-ablakot** figyel: ha az utóbbi `AC_SENSE_WINDOW_MS` (**40 ms**, > 1 hálózati
-periódus) ideje alatt **volt aktív minta**, akkor a mintavett ág „aktív" (a
-`fanRelayEngaged[i]` igaz); tartós inaktív minta → hamis. Erre `80 ms` debounce és a
-relé-parancs utáni `1500 ms` türelmi idő épül.
+**FONTOS — miért nem elég egy `digitalRead`, és miért LOW-alapú a detektálás:** a
+H11AA1M a bemenetén lévő 230V AC-ra **LOW-t** húz (vezet a fototranzisztor), AC nélkül
+a belső felhúzó **HIGH**-ra húz. A vezetés viszont **nem folyamatos**: a nullátmenetek
+körül ~**100 Hz**-cel rövid időre megszakad (HIGH-tüske). Ezért a program **idő-ablakot**
+figyel, és kifejezetten a **LOW mintát** keresi: ha az utóbbi `AC_SENSE_WINDOW_MS`
+(**40 ms**, > 1 hálózati periódus) ideje alatt **volt LOW minta**, akkor **van AC** a
+sense-ágon; ha végig HIGH, akkor **nincs**. Erre `80 ms` debounce és a relé-parancs
+utáni `1500 ms` türelmi idő épül.
 
-A nyers minta aktív-szintjét a `FAN_SENSE_ACTIVE_LOW` adja: **alapból `0`, azaz a
-HIGH az aktív minta**. A bontó-érintkezős bekötésnél ezért: a relé **behúzva** →
-NC **nyitva** → nincs AC a sense-ágon → a felhúzó HIGH-ra húz → a minta „aktív".
-Vagyis **`fanRelayEngaged[i]=TRUE` jelentése: „az `i`. relé behúzva (a fokozat aktív)"** —
-*nem* „van AC a kimeneten". Így marad helyes az alábbi `elvárt vs. mért` összevetés.
+> **Miért robusztus a LOW-alapú detektálás (a HW-szűrőtől függetlenül):** AC
+> jelenlétében a jel — akár hardveresen szűrve (stabil LOW), akár szűretlenül
+> (túlnyomóan LOW + rövid nullátmeneti HIGH-tüskék) — **mindig ad LOW mintát**; a
+> HIGH-tüskéket szándékosan **ignoráljuk**. Így az opto-kimeneti RC-szűrő (lásd a
+> *Panel passzív alkatrészek* szakaszt) **kiesése vagy a kondenzátor kiszáradása esetén
+> sem keletkezik téves STUCK** → nincs téves failsafe. (Egy korábbi, a HIGH-szintet
+> figyelő változat a tüskéktől megzavarodott volna szűrő nélkül.)
+
+A **bontó-érintkezős** bekötésnél: a relé **behúzva** → NC **nyitva** → nincs AC a
+sense-ágon → nincs LOW minta → **`fanRelayEngaged[i]=TRUE`**. Vagyis a `TRUE` jelentése
+„az `i`. relé behúzva (a fokozat aktív)" — *nem* „van AC a kimeneten".
 
 A mért állapotot (`fanRelayEngaged[]`) a program összeveti az **elvárttal**
 (`relaysEnabled && currentZone == fan`), és a két eltérés-irányra **aszimmetrikusan**
@@ -155,7 +162,7 @@ A teljes funkció a program elején, a `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` kapcsoló
 mellett a **`FAN_SENSE_ENABLE`** makróval ki/be kapcsolható (`1` = be, `0` = ki).
 **Jelenleg `1` (bekapcsolva).** Kikapcsolva a hozzá tartozó kód **bele sem fordul**,
 és a SENSE lábak szabadon maradnak. Finomhangolás a PINS szekció után:
-**`FAN_SENSE_ACTIVE_LOW`** (polaritás, **alapból `0`** a bontó-érintkezős bekötéshez),
+**`FAN_SENSE_AC_MEANS_ENGAGED`** (bekötés-leképezés, **alapból `0`** a bontó-érintkezős bekötéshez),
 `FAN_SENSE_FAILSAFE_ON_STUCK` (STUCK → failsafe),
 `FAN_SENSE_WARN_ON_NOAC` (NOAC → figyelmeztetés), valamint az időzítő konstansok.
 
@@ -469,7 +476,7 @@ A teljes, részletes változás-napló ([MOD-x] / [FIX-ESP-x] bejegyzésekkel):
 
 | Verzió | Változás |
 | --- | --- |
-| **7.13.0** | **AC-érzékelés a relé bontó (NC) érintkezőjén** (a soros fan-tekercsek miatt a kimenet-figyelés nem tudta megkülönböztetni a fokozatokat) → `FAN_SENSE_ACTIVE_LOW` alapból **`0`**; a STUCK/NOAC failsafe-logika változatlanul helyes. **Soros kimenet egységesítése**: `Serial.begin` (és `flush`) csak ha `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` valamelyike aktív; minden debugon kívüli `Serial.print` kapuzott makróra cserélve. Megjegyzések egysorosra húzva. |
+| **7.13.0** | **AC-érzékelés a relé bontó (NC) érintkezőjén** (a soros fan-tekercsek miatt a kimenet-figyelés nem tudta megkülönböztetni a fokozatokat) → bekötés-leképezés a `FAN_SENSE_AC_MEANS_ENGAGED` makróval (alapból **`0`**); a detektálás **LOW-alapú** (opto-vezetés), így az opto-kimeneti RC-szűrő kiesése **sem** ad téves STUCK-ot. A STUCK/NOAC failsafe-logika változatlanul helyes. **Soros kimenet egységesítése**: `Serial.begin` (és `flush`) csak ha `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` valamelyike aktív; minden debugon kívüli `Serial.print` kapuzott makróra cserélve. Megjegyzések egysorosra húzva. |
 | **7.11.1** | Brownout/reset-**hurok-megszakító** (RTC-számláló): rövid időn belül ismétlődő hibás reset → a boot nem állítja vissza a görgőt/ventit, idle marad (30 s stabil futás után nullázódik). Relék **azonnali tiltása** a `setup()` legelején (C6 GPIO17 boot-felhúzás ellen). Főleg a C6 „visszaállítás után furán működik / nincs serial" tünetre. |
 | **7.11.0** | RAM-optimalizálás: a kettős, statikus 2×16 KB OTA-buffer helyett **egy, dinamikusan allokált** buffer (csak OTA alatt). Statikus RAM **−32 KB** (globálisok 72→39 KB, szabad RAM ~255→~288 KB). Működés bitre azonos; malloc-hiba esetén az OTA érthető hibával nem indul. |
 | **7.10.1** | XIAO ESP32-C6: bootkor a **külső antenna** kiválasztása (RF-switch: `WIFI_ENABLE` GPIO3 LOW + `WIFI_ANT_CONFIG` GPIO14 HIGH), a rádió indítása előtt. Csak C6-on fordul bele; C3 változatlan. |
