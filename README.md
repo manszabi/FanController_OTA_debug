@@ -119,7 +119,7 @@ passzív alkatrészek kerültek:
 > függetlenül attól, merre folyik az AC a kimeneteken.
 >
 > Emiatt a logika polaritása fordított: **`FAN_SENSE_ACTIVE_LOW` alapból `0`**.
-> Ezzel a `fanLineLive[i]` jelentése változatlan marad – „az `i`. fokozat aktív" –,
+> Ezzel a `fanRelayEngaged[i]` jelentése változatlan marad – „az `i`. fokozat aktív" –,
 > így az alábbi `elvárt vs. mért` failsafe-logika érintetlen, továbbra is helyes.
 
 **FONTOS — miért nem elég egy `digitalRead`:** a H11AA1M bemenetén antiparallel
@@ -128,23 +128,23 @@ körül**. Ezért a jel 230V AC jelenlétében **nem folyamatos**, hanem ~**100 
 (50 Hz hálózat → félhullámonként egyszer) rövid időre átbillen. A program ezért
 **idő-ablakot** figyel: ha az utóbbi `AC_SENSE_WINDOW_MS` (**40 ms**, > 1 hálózati
 periódus) ideje alatt **volt aktív minta**, akkor a mintavett ág „aktív" (a
-`fanLineLive[i]` igaz); tartós inaktív minta → hamis. Erre `80 ms` debounce és a
+`fanRelayEngaged[i]` igaz); tartós inaktív minta → hamis. Erre `80 ms` debounce és a
 relé-parancs utáni `1500 ms` türelmi idő épül.
 
 A nyers minta aktív-szintjét a `FAN_SENSE_ACTIVE_LOW` adja: **alapból `0`, azaz a
 HIGH az aktív minta**. A bontó-érintkezős bekötésnél ezért: a relé **behúzva** →
 NC **nyitva** → nincs AC a sense-ágon → a felhúzó HIGH-ra húz → a minta „aktív".
-Vagyis **`fanLineLive[i]=TRUE` jelentése: „az `i`. relé behúzva (a fokozat aktív)"** —
+Vagyis **`fanRelayEngaged[i]=TRUE` jelentése: „az `i`. relé behúzva (a fokozat aktív)"** —
 *nem* „van AC a kimeneten". Így marad helyes az alábbi `elvárt vs. mért` összevetés.
 
-A mért állapotot (`fanLineLive[]`) a program összeveti az **elvárttal**
+A mért állapotot (`fanRelayEngaged[]`) a program összeveti az **elvárttal**
 (`relaysEnabled && currentZone == fan`), és a két eltérés-irányra **aszimmetrikusan**
 reagál (`DIAG?` paranccsal a `diag.log` lekérdezhető):
 
 - **STUCK** – a zóna **OFF**, de a mérés **aktívat** jelez → beragadt/hegedt relé.
   Reakció: **azonnali `STATE_FAILSAFE`** + figyelmeztetés + `diag.log`. A `diag.log`
   **szinkron** (flush) íródik a failsafe-be lépés **előtt**, így a naplózás nem
-  szakad félbe. (A `fanLineLive` ekkor már a 40 ms ablak + 80 ms debounce-on átment.)
+  szakad félbe. (A `fanRelayEngaged` ekkor már a 40 ms ablak + 80 ms debounce-on átment.)
 - **NOAC** – a zóna **ON**, de a mérés **inaktív** → relé/biztosíték/ventilátor/hálózat hiba.
   Reakció: `FAN_SENSE_MISMATCH_CONFIRM_MS` (**1000 ms**) debounce után **egyszeri**
   figyelmeztetés + `diag.log`, **failsafe NÉLKÜL** — a rendszer fut tovább. A latch
