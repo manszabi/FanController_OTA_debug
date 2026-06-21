@@ -55,8 +55,8 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.12.0"
-#define FIRMWARE_DATE "2026-06-16"
+#define FIRMWARE_VERSION "7.13.0"
+#define FIRMWARE_DATE "2026-06-21"
 
 // ===================== PINS =====================      
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
@@ -81,18 +81,21 @@
 #define LED_RED 4
 #endif
 
-// ===================== FAN RELÉ KIMENET FIGYELÉS (H11AA1M) =====================
+// ===================== FAN RELÉ BONTÓ-ÉRINTKEZŐ FIGYELÉS (H11AA1M) =====================
+// Az AC-érzékelés a relék BONTÓ (NC) érintkezőjén van. A ventilátor soros tekercsei
+// miatt egy aktív fokozatnál minden ágon megjelenik az AC, ezért a kimenet (NO) figyelése
+// nem megkülönböztethető — a bontó-érintkező adja, melyik relé NINCS behúzva.
 #if FAN_SENSE_ENABLE
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
-#define FAN1_SENSE_PIN 19    // D? — Fan1 (RELAY_FAN1) kimenetének figyelése
-#define FAN2_SENSE_PIN 20    // D? — Fan2 (RELAY_FAN2) kimenetének figyelése
-#define FAN3_SENSE_PIN 18    // D? — Fan3 (RELAY_FAN3) kimenetének figyelése
+#define FAN1_SENSE_PIN 19    // D? — Fan1 (RELAY_FAN1) bontó (NC) érintkezőjének figyelése
+#define FAN2_SENSE_PIN 20    // D? — Fan2 (RELAY_FAN2) bontó (NC) érintkezőjének figyelése
+#define FAN3_SENSE_PIN 18    // D? — Fan3 (RELAY_FAN3) bontó (NC) érintkezőjének figyelése
 #else
-#define FAN1_SENSE_PIN 6    // D4 — Fan1 (RELAY_FAN1) kimenetének figyelése
-#define FAN2_SENSE_PIN 7    // D5 — Fan2 (RELAY_FAN2) kimenetének figyelése
-#define FAN3_SENSE_PIN 20   // D7 — Fan3 (RELAY_FAN3) kimenetének figyelése
+#define FAN1_SENSE_PIN 6    // D4 — Fan1 (RELAY_FAN1) bontó (NC) érintkezőjének figyelése
+#define FAN2_SENSE_PIN 7    // D5 — Fan2 (RELAY_FAN2) bontó (NC) érintkezőjének figyelése
+#define FAN3_SENSE_PIN 20   // D7 — Fan3 (RELAY_FAN3) bontó (NC) érintkezőjének figyelése
 #endif
-#define FAN_SENSE_ACTIVE_LOW 1   // 1: LOW = van AC (vezet az opto); 0: fordított
+#define FAN_SENSE_ACTIVE_LOW 0   // bontó-érintkezőn fordított a logika: 0 = HIGH jelenti az aktív AC-mintát
 
 const uint8_t fanSensePins[3] = { FAN1_SENSE_PIN, FAN2_SENSE_PIN, FAN3_SENSE_PIN };
 

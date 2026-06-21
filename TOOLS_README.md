@@ -188,11 +188,18 @@ Ha USB-soros hozzáféréssel rendelkezel (nem csak BLE), a serial output többe
 
 Figyeld az `otaLoop()` vagy `stateMachineStep()` sorát, ha "leállást" suspectzalsz.
 
+> **v7.13.0-tól — a soros kimenet feltételhez kötött:** a `Serial.begin(115200)` csak
+> akkor fut le, ha a firmware forrásának elején a `DEBUG`, `OTA_DEBUG` vagy `BOOT_DIAG`
+> kapcsolók **valamelyike** `1` (alapból `DEBUG=1`, `BOOT_DIAG=1`). Ha mindhárom `0`,
+> **nincs soros kimenet** (és a `Serial` el sem indul) — ekkor a diagnózist BLE-n a
+> `diag_client.py`-vel kell lekérni. Az OTA per-csomag részletekhez `OTA_DEBUG=1` kell.
+
 ---
 
 ## Verzió / Firmware
 
 - **v7.6.3**: Diag napló bevezetése (reset ok, lowmem, sleep source)
 - **v7.6.4**: OTA magic-byte ellenőrzés a félrevezető "Decryption error" helyett
+- **v7.13.0**: AC-érzékelés a relé **bontó (NC) érintkezőjére** került (soros fan-tekercsek miatt) → `FAN_SENSE_ACTIVE_LOW=0`; a STUCK/NOAC diag-naplózás változatlan. A **soros kimenet egységesítve**: `Serial.begin` csak `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` valamelyikénél.
 
 Frissítés után a diag napló `[sleep]`, `[boot]`, `[lowmem]`, `[ota]` sorokat fogja rögzíteni.

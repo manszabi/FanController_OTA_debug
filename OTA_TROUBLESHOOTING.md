@@ -98,3 +98,10 @@ Error code: ...
 Error string: ...
 ```
 és abból tovább diagnosztizálható (méret, MD5, flash write stb.).
+
+> **Megjegyzés a soros kimenetről (v7.13.0-tól):** ez a `performUpdate()`-log a
+> `DEBUG` csatornán megy. A `Serial` **csak akkor** indul el (`Serial.begin`), ha a
+> forrás elején a `DEBUG`, `OTA_DEBUG` vagy `BOOT_DIAG` valamelyike `1` (alapból
+> `DEBUG=1`). A per-csomag OTA-részletekhez (`FS write…`, `0xFC part…`) az
+> `OTA_DEBUG=1` is kell. Ha mindhárom `0`, **nincs soros kimenet** — ekkor a hibát a
+> BLE-válaszból (`ERR: …`) és a `diag.log`-ból (`DIAG?`) lehet kiolvasni.
