@@ -106,10 +106,10 @@ const unsigned long FAN_SENSE_MISMATCH_CONFIRM_MS = 1000;
 #define FAN_SENSE_FAILSAFE_ON_STUCK 1   // STUCK → STATE_FAILSAFE (azonnal, türelmi idő után)
 #define FAN_SENSE_WARN_ON_NOAC      1   // NOAC  → figyelmeztetés + diag.log (failsafe NÉLKÜL)
 
-unsigned long fanSenseLastActive[3] = { 0, 0, 0 };   // utolsó aktív (LOW) minta ideje (ms)
-bool fanLineLive[3] = { false, false, false };        // SZŰRT: van-e AC az adott fan kimenetén
+unsigned long fanSenseLastActive[3] = { 0, 0, 0 };   // utolsó aktív minta ideje (ms); az aktív szintet FAN_SENSE_ACTIVE_LOW adja
+bool fanRelayEngaged[3] = { false, false, false };        // SZŰRT állapot: TRUE = az adott relé behúzva (NC nyitva, a fokozat aktív)
 unsigned long fanSenseChangeSince[3] = { 0, 0, 0 };   // mióta tér el a nyers a szűrttől (debounce)
-bool fanSenseSeen[3] = { false, false, false };       // láttunk-e már valaha aktív (LOW) mintát
+bool fanSenseSeen[3] = { false, false, false };       // láttunk-e már valaha aktív mintát
 unsigned long fanSenseGraceUntil = 0;                 // eddig nem értékelünk eltérést
 unsigned long fanMismatchSince[3] = { 0, 0, 0 };      // NOAC: mióta áll fenn az eltérés (0 = nincs)
 bool fanNoacWarned[3] = { false, false, false };      // NOAC: figyelmeztettünk-e már (ne spammeljen)
@@ -1946,18 +1946,18 @@ void monitorFanRelays() {
       fanSenseSeen[i] = true;
     }
 
-    bool rawLive = fanSenseSeen[i] &&
+    bool rawEngaged = fanSenseSeen[i] &&
                    ((unsigned long)(now - fanSenseLastActive[i]) < AC_SENSE_WINDOW_MS);
 
-    if (rawLive != fanLineLive[i]) {
+    if (rawEngaged != fanRelayEngaged[i]) {
       if (fanSenseChangeSince[i] == 0) fanSenseChangeSince[i] = now;
       if ((unsigned long)(now - fanSenseChangeSince[i]) >= AC_SENSE_DEBOUNCE_MS) {
-        fanLineLive[i] = rawLive;
+        fanRelayEngaged[i] = rawEngaged;
         fanSenseChangeSince[i] = 0;
         if (!inGrace) {
           DBG_P("Relay");
           DBG_V(i + 1);
-          DBG_VLN(rawLive ? F(" ACTIVE") : F(" INACTIVE"));
+          DBG_VLN(rawEngaged ? F(" ACTIVE") : F(" INACTIVE"));
         }
       }
     } else {
@@ -1972,11 +1972,11 @@ void checkFanRelayMismatch() {
   bool inGrace = ((long)(fanSenseGraceUntil - now) > 0);
 
   for (int i = 0; i < 3; i++) {
-    bool expectedLive = relaysEnabled && (currentZone == (i + 1));
-    bool live = fanLineLive[i];
+    bool expectedEngaged = relaysEnabled && (currentZone == (i + 1));
+    bool engaged = fanRelayEngaged[i];          // TRUE = a relé behúzva (NC-érzékelés)
 
-    bool stuck = (!expectedLive && live);   // OFF-nak kéne, de VAN AC
-    bool noac  = (expectedLive && !live);   // ON-nak kéne, de NINCS AC
+    bool stuck = (!expectedEngaged && engaged);   // a zóna OFF-ot vár, de a relé BEHÚZVA (NC nyitva) → beragadt relé
+    bool noac  = (expectedEngaged && !engaged);   // a zóna ON-t vár, de a relé NINCS behúzva → relé/biztosíték/hálózat hiba
 
 #if FAN_SENSE_FAILSAFE_ON_STUCK
     if (stuck && !inGrace) {
@@ -1998,7 +1998,7 @@ void checkFanRelayMismatch() {
           (unsigned long)(now - fanMismatchSince[i]) >= FAN_SENSE_MISMATCH_CONFIRM_MS) {
         DBG_P("FIGYELEM: Fan");
         DBG_V(i + 1);
-        DBG(" nincs AC (ON, de nincs visszajelzes) - tovabb fut");
+        DBG(" zona ON, de a rele nincs behuzva (nincs NC-visszajelzes) - tovabb fut");
 
         fanNoacWarned[i] = true;  // egyszer figyelmeztetünk, amíg fennáll
       }
