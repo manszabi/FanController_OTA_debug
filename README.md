@@ -81,6 +81,28 @@ makró alapján választ — lásd a `build.sh` `TARGET` opcióját):
 > generikus C6 boardra is fordul. A 2,4 GHz rádiót Wi-Fi/BLE/802.15.4 közösen
 > használja egy antenna-kapcsolóval, ezért ez a **BLE-re is** vonatkozik.
 
+### Panel passzív alkatrészek
+
+A panelra a stabil boot-/kapcsolási viselkedés és a zajszűrés érdekében az alábbi
+passzív alkatrészek kerültek:
+
+| Hely | Alkatrész | Szerep |
+|---|---|---|
+| Relé-vezérlő GPIO-k (`RELAY_FAN1/2/3`, `RELAY_ROLLER`) | 10 kΩ **felhúzó** | boot/tranziens alatt definiált HIGH → relék **OFF** (aktív-LOW), lebegés ellen |
+| Relé tápengedély (`RELAY_EN`) | 10 kΩ **lehúzó** | boot alatt biztos LOW → relék tiltva (különösen a C6 GPIO17 belső felhúzása ellen, `[FIX-ESP-39]`) |
+| Nyomógomb (`BUTTON_PIN`) | 22 kΩ felhúzó + 100 nF a kapcsolóval **párhuzamosan** | definiált alapszint + hardveres debounce |
+| H11AA1M **bemenet** (230V AC oldal) | 2 × 120 kΩ soros | áramkorlátozás az antiparallel LED-párhoz |
+| H11AA1M **kimenet** (`FANx_SENSE_PIN`) | 22 kΩ felhúzó + 100 nF ∥ 1 µF | definiált HIGH + RC-szűrés a ~100 Hz-es AC-ripple-re (a belső `INPUT_PULLUP` mellett) |
+| LED-ek (sárga / piros) | 330 Ω soros | áramkorlátozás |
+| 5V USB táp | 1000 µF ∥ 100 nF | táppuffer/szűrés a relé-kapcsolási áramlökések ellen (brownout-csökkentés) |
+
+> A 10 kΩ felhúzók (relé-vezérlés) és a 10 kΩ lehúzó (`RELAY_EN`) hardveresen is
+> biztosítják a `setup()` legelején szoftveresen beállított „minden relé OFF +
+> tápengedély LOW" boot-állapotot, így a boot-pillanatbeli áramlökés/brownout-esély
+> kisebb. A H11AA1M kimenetén lévő RC-tag (22 kΩ + 100 nF ∥ 1 µF) simítja a
+> nullátmeneteknél jelentkező 100 Hz-es ripple-t; a firmware emellett is idő-ablakos
+> mintavételt használ (lásd a következő szakaszt).
+
 ---
 
 ## Fan relé BONTÓ-érintkező figyelése (H11AA1M)
