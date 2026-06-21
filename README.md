@@ -316,6 +316,14 @@ A frissítés a dedikált OTA BLE szolgáltatáson keresztül történik. Védel
   hogy a feltöltött bináris első byte-ja **0xE9** (érvényes ESP32 app image).
   Ha nem, **érthető hibát** ad a félrevezető „Decryption error" helyett, és a
   diag naplóba is bekerül (`[ota] bad magic=0x..`).
+- **Rollback health-check**: a bootloaderben engedélyezett app-rollback
+  (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`) mellett az újonnan feltöltött firmware
+  `PENDING_VERIFY` állapotban indul. A firmware **csak ~30 s stabil futás után**
+  (`OTA_VERIFY_HEALTHY_MS`), vagy egy kontrollált deep sleep előtt jelöli magát
+  érvényesnek (`[ota] healthcheck OK -> valid`). Ha addig boot- vagy futáshiba
+  (panic/watchdog/brownout) miatt újraindul, a bootloader **automatikusan
+  visszagörget az előző jó verzióra**. (USB-flashelt buildnél az állapot
+  `UNDEFINED`, ekkor a health-check nem aktív.)
 
 > **Tipp:** mindig az alkalmazás `*.ino.bin` fájlját töltsd fel — ne a
 > `*.merged.bin`, `*.partitions.bin` vagy gzip-elt (`0x1F`) fájlt. Ellenőrzéshez:
