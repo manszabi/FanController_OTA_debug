@@ -139,6 +139,12 @@ static int otaExpectedPart = 0;
 bool otaPendingReboot = false;
 unsigned long otaRebootAt = 0;
 
+// [OTA health-check] Frissen OTA-zott, még meg nem erősített (PENDING_VERIFY)
+// firmware-nél igaz. A loop csak OTA_VERIFY_HEALTHY_MS stabil futás után jelöli
+// érvényesnek (vagy egy kontrollált deep sleep előtt) — addig boot-/futáshiba
+// esetén a bootloader visszagörget az előző jó verzióra.
+bool otaPendingVerify = false;
+
 bool otaInstallWaiting = false;
 unsigned long otaInstallWaitUntil = 0;
 
@@ -261,6 +267,7 @@ RTC_NOINIT_ATTR int errRestoreCount;
 #define ERR_RESTORE_MAGIC 0x10075EED
 const int MAX_ERR_RESTORE = 3;                       // ennyiedik egymást követőnél már idle
 const unsigned long ERR_RESTORE_CLEAR_MS = 30000;    // ennyi stabil futás után nullázzuk
+const unsigned long OTA_VERIFY_HEALTHY_MS = 30000;   // OTA health-check: ennyi stabil futás után validál
 bool errRestoreCleared = false;
 bool restore_roller = false;
 
@@ -452,21 +459,7 @@ void ota_boot_flow() {
     DBG_P(" address=0x");
     Serial.println(boot->address, HEX);
 
-    DBG("New firmware booted FIRST TIME → validating...");
-
-    esp_err_t res = esp_ota_mark_app_valid_cancel_rollback();
-
-    DBG_P("Validation result: ");
-    Serial.print(esp_err_to_name(res));
-    DBG_P(" (");
-    Serial.print(res);
-    DBG(")");
-
-    if (res == ESP_OK) {
-      DBG("Firmware marked as VALID");
-    } else {
-      DBG("Firmware validation FAILED → rollback may occur");
-    }
+    DBG("New firmware booted FIRST TIME");
   }
 
   esp_ota_img_states_t state;
@@ -475,18 +468,27 @@ void ota_boot_flow() {
   if (st == ESP_OK) {
     const char* stName;
     switch (state) {
-      case ESP_OTA_IMG_NEW:     stName = "NEW (not validated yet)"; break;
-      case ESP_OTA_IMG_VALID:   stName = "VALID"; break;
-      case ESP_OTA_IMG_INVALID: stName = "INVALID"; break;
-      case ESP_OTA_IMG_ABORTED: stName = "ABORTED"; break;
-      default:                  stName = "UNDEFINED"; break;
+      case ESP_OTA_IMG_NEW:            stName = "NEW"; break;
+      case ESP_OTA_IMG_PENDING_VERIFY: stName = "PENDING_VERIFY"; break;
+      case ESP_OTA_IMG_VALID:          stName = "VALID"; break;
+      case ESP_OTA_IMG_INVALID:        stName = "INVALID"; break;
+      case ESP_OTA_IMG_ABORTED:        stName = "ABORTED"; break;
+      default:                         stName = "UNDEFINED"; break;
     }
     DBG_P("OTA image state: ");
     Serial.print(stName);
     DBG_P(" (0x");
     Serial.print(state, HEX);
-    DBG_P("), rollback: ");
-    Serial.println(state == ESP_OTA_IMG_NEW ? "YES" : "NO");
+    DBG(")");
+
+    // Health-check: frissen OTA-zott, még meg nem erősített firmware → NE
+    // validáljuk most. A loop OTA_VERIFY_HEALTHY_MS stabil futás után (vagy az
+    // enterDeepSleep alvás előtt) jelöli érvényesnek. (Itt nincs diagLog: a
+    // SPIFFS még nincs mountolva.)
+    if (state == ESP_OTA_IMG_PENDING_VERIFY) {
+      otaPendingVerify = true;
+      DBG("PENDING_VERIFY → health-check: validalas stabil futas utan");
+    }
   } else {
     DBG_P("Failed to read OTA state: ");
     Serial.println(esp_err_to_name(st));
@@ -1462,6 +1464,21 @@ void loop() {
     errRestoreCleared = true;
   }
 
+  // OTA health-check: frissen OTA-zott firmware csak OTA_VERIFY_HEALTHY_MS stabil
+  // futás után jelöli magát érvényesnek. Ha előbb újraindul (panic/WDT/brownout),
+  // a bootloader visszagörget az előző jó verzióra.
+  if (otaPendingVerify && now2 >= OTA_VERIFY_HEALTHY_MS) {
+    esp_err_t r = esp_ota_mark_app_valid_cancel_rollback();
+    otaPendingVerify = false;
+    if (r == ESP_OK) {
+      DBG("OTA health-check OK → firmware VALID (rollback lemondva)");
+      diagLog("[ota] healthcheck OK -> valid");
+    } else {
+      DBG_P("OTA mark valid FAILED: ");
+      Serial.println(esp_err_to_name(r));
+    }
+  }
+
   if (now2 - lastCheck >= checkInterval) {
     lastCheck = now2;
     stateMachineStep();
@@ -2117,6 +2134,15 @@ void enterDeepSleep(const char* reason) {
   Serial.print(F("Reason: "));
   Serial.println(reason);
   Serial.println(F("===================================="));
+
+  // OTA health-check: egy kontrollált deep sleep elérése is bizonyítja, hogy a
+  // firmware működik. Validáljuk most, különben a PENDING_VERIFY állapotban való
+  // ébredés rollbackot váltana ki egy egyébként jó firmware-en.
+  if (otaPendingVerify) {
+    esp_ota_mark_app_valid_cancel_rollback();
+    otaPendingVerify = false;
+    diagLog("[ota] healthcheck OK (pre-sleep) -> valid");
+  }
 
   {
     char e[64];
