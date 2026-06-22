@@ -183,8 +183,8 @@ portMUX_TYPE zoneMux = portMUX_INITIALIZER_UNLOCKED;
 struct BleCommand {
   bool hasCommand;
   int zone;
-  bool hasRollerCommand;
-  int rollerCommand;
+  bool hasMainCommand;
+  int mainCommand;
 };
 
 enum SystemState {
@@ -278,9 +278,9 @@ RTC_NOINIT_ATTR uint32_t savedZoneMagic;
 RTC_NOINIT_ATTR int savedZone;
 #define SAVED_ZONE_MAGIC 0xFA11A5EE
 
-RTC_NOINIT_ATTR uint32_t savedRollerMagic;
-RTC_NOINIT_ATTR int savedRoller;       // 1 = aktív volt, 0 = nem
-#define SAVED_ROLLER_MAGIC 0xF0117E55
+RTC_NOINIT_ATTR uint32_t savedMainMagic;
+RTC_NOINIT_ATTR int savedMain;       // 1 = aktív volt, 0 = nem
+#define SAVED_MAIN_MAGIC 0xF0117E55
 
 // [FIX-ESP-39] Hibás-reset hurok-megszakító: gyors ismétlődő hibás resetnél a boot nem állít vissza → megszakad a brownout-hurok
 RTC_NOINIT_ATTR uint32_t errRestoreMagic;
@@ -290,11 +290,11 @@ const int MAX_ERR_RESTORE = 3;                       // ennyiedik egymást köve
 const unsigned long ERR_RESTORE_CLEAR_MS = 30000;    // ennyi stabil futás után nullázzuk
 const unsigned long OTA_VERIFY_HEALTHY_MS = 30000;   // OTA health-check: ennyi stabil futás után validál
 bool errRestoreCleared = false;
-bool restore_roller = false;
+bool restore_main = false;
 
 Preferences fanPrefs;
 int nvsLastSavedZone = -1;             // amit utoljára NVS-be írtunk (cache, hogy ne írjunk feleslegesen)
-int nvsLastSavedRoller = -1;           // [FIX-ESP-30] görgő NVS cache (-1 = nincs mentve)
+int nvsLastSavedMain = -1;           // [FIX-ESP-30] görgő NVS cache (-1 = nincs mentve)
 unsigned long zoneStableSince = 0;     // mikortól stabil a jelenlegi fokozat
 bool nvsZonePending = false;           // van-e még nem mentett stabil fokozat
 const unsigned long NVS_SAVE_STABLE_MS = 30000;  // 30 mp stabilitás után mentünk
@@ -327,8 +327,8 @@ struct Timer {
 
 // ===================== FORWARD DECLARATIONS =====================
 void setFanZone(int zone, CommandSource source = SRC_NONE);
-void activateRoller();
-void deactivateRoller();
+void activateMain();
+void deactivateMain();
 void enableRelays();
 void disableRelays();
 #if RELAY_TEST_AT_BOOT
@@ -824,20 +824,20 @@ class MyCallbacks : public BLECharacteristicCallbacks {
         return;
       }
 
-      int rollerCmd = val.charAt(7) - '0';
+      int mainCmd = val.charAt(7) - '0';
 
-      if (rollerCmd != 0 && rollerCmd != 1) {
+      if (mainCmd != 0 && mainCmd != 1) {
         DBG("Roller must be 0/1");
         return;
       }
 
       portENTER_CRITICAL(&bleCmdMux);
-      bleCmd.rollerCommand = rollerCmd;
-      bleCmd.hasRollerCommand = true;
+      bleCmd.mainCommand = mainCmd;
+      bleCmd.hasMainCommand = true;
       portEXIT_CRITICAL(&bleCmdMux);
 
       DBG_P("Roller queued: ");
-      DBG_VLN(rollerCmd);
+      DBG_VLN(mainCmd);
 
     } else if (val.startsWith("DIAG?")) {
       String correctPin = BLE_AUTH_PIN;
@@ -978,13 +978,13 @@ void handleClick() {
   if (!mainActive) {
     enableRelays();
     delay(100);
-    activateRoller();
+    activateMain();
   } else if (currentZone != 0) {
     // Aktív ventilátor → első gombnyomás csak a ventilátort állítja le (görgő/relé marad); a következő kattintás kapcsol ki mindent
     manualZoneIndex = 0;
     setFanZone(0, SRC_BUTTON);
   } else {
-    deactivateRoller();
+    deactivateMain();
     delay(100);
     disableRelays();
   }
@@ -1180,8 +1180,8 @@ void printBootDiag() {
 #if BOOT_DIAG
   bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
   bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
-  bool rollerRtcValid = (savedRollerMagic == SAVED_ROLLER_MAGIC &&
-                         (savedRoller == 0 || savedRoller == 1));
+  bool mainRtcValid = (savedMainMagic == SAVED_MAIN_MAGIC &&
+                         (savedMain == 0 || savedMain == 1));
 
   Serial.println();
   Serial.println(F("===================================="));
@@ -1198,10 +1198,10 @@ void printBootDiag() {
   Serial.println(F(")"));
   Serial.print(F("RTC savedZone: "));
   Serial.println(savedZone);
-  Serial.print(F("RTC savedRoller: "));
-  Serial.print(savedRoller);
+  Serial.print(F("RTC savedMain: "));
+  Serial.print(savedMain);
   Serial.print(F(" ("));
-  Serial.print(rollerRtcValid ? F("valid") : F("invalid"));
+  Serial.print(mainRtcValid ? F("valid") : F("invalid"));
   Serial.println(F(")"));
 
   Serial.print(F("NVS zone: "));
@@ -1210,9 +1210,9 @@ void printBootDiag() {
   Serial.print(nvsValid ? F("valid") : F("none/invalid"));
   Serial.println(F(")"));
   Serial.print(F("NVS roller: "));
-  Serial.print(nvsLastSavedRoller);
+  Serial.print(nvsLastSavedMain);
   Serial.print(F(" ("));
-  Serial.print((nvsLastSavedRoller == 0 || nvsLastSavedRoller == 1) ? F("valid") : F("none/invalid"));
+  Serial.print((nvsLastSavedMain == 0 || nvsLastSavedMain == 1) ? F("valid") : F("none/invalid"));
   Serial.println(F(")"));
 
   Serial.println(F("--- diag.log ---"));
@@ -1460,7 +1460,7 @@ void setup() {
   DBG("Relay state restore");
   fanPrefs.begin("fan", true);  // read-only
   nvsLastSavedZone = fanPrefs.getInt("zone", -1);
-  nvsLastSavedRoller = fanPrefs.getInt("main", -1);  // [FIX-ESP-30] görgő (-1 = nincs)
+  nvsLastSavedMain = fanPrefs.getInt("main", -1);  // [FIX-ESP-30] görgő (-1 = nincs)
   fanPrefs.end();
 
   if (lastBootResetReason == ESP_RST_BROWNOUT ||
@@ -1469,13 +1469,13 @@ void setup() {
       lastBootResetReason == ESP_RST_TASK_WDT ||
       lastBootResetReason == ESP_RST_WDT) {
 
-    bool rollerRtcValid = (savedRollerMagic == SAVED_ROLLER_MAGIC &&
-                           (savedRoller == 0 || savedRoller == 1));
-    bool rollerNvsValid = (nvsLastSavedRoller == 0 || nvsLastSavedRoller == 1);
-    int rollerWas;
-    if (rollerRtcValid)      rollerWas = savedRoller;          // RTC friss
-    else if (rollerNvsValid) rollerWas = nvsLastSavedRoller;   // NVS fallback (brownout)
-    else                     rollerWas = -1;                   // ismeretlen → nem indítunk
+    bool mainRtcValid = (savedMainMagic == SAVED_MAIN_MAGIC &&
+                           (savedMain == 0 || savedMain == 1));
+    bool mainNvsValid = (nvsLastSavedMain == 0 || nvsLastSavedMain == 1);
+    int mainWas;
+    if (mainRtcValid)      mainWas = savedMain;          // RTC friss
+    else if (mainNvsValid) mainWas = nvsLastSavedMain;   // NVS fallback (brownout)
+    else                     mainWas = -1;                   // ismeretlen → nem indítunk
 
     // [FIX-ESP-39] Hurok-megszakító számláló (RTC). Érvénytelen magic → 0-ról indul.
     if (errRestoreMagic != ERR_RESTORE_MAGIC) {
@@ -1483,7 +1483,7 @@ void setup() {
       errRestoreMagic = ERR_RESTORE_MAGIC;
     }
 
-    if (rollerWas != 1) {
+    if (mainWas != 1) {
       DBG("Boot after error reset, roller was NOT active → staying idle");
     } else if (++errRestoreCount >= MAX_ERR_RESTORE) {
       // Túl sok gyors hibás reset (brownout-hurok gyanú) → nem állítunk vissza, idle marad; a számláló 30 s stabil futás után nullázódik
@@ -1494,11 +1494,11 @@ void setup() {
       snprintf(e, sizeof(e), "[boot] loop-break idle n=%d", errRestoreCount);
       diagLog(e);
     } else {
-      restore_roller= true;
+      restore_main= true;
       DBG("Boot after BROWNOUT/UNKNOWN/WDT, roller was active → resuming");
       enableRelays();
       delay(100);
-      activateRoller();
+      activateMain();
 
       bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
       bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
@@ -1729,7 +1729,7 @@ void normalMode() {
       if (bleZoneTimeout.elapsed(nowNormalMode)) {
         DBG("Zone timeout → all OFF");
         setFanZone(0, SRC_NONE);
-        deactivateRoller();
+        deactivateMain();
         disableRelays();
         bleZoneTimeoutMsgShownLocal = false;
       }
@@ -1778,19 +1778,19 @@ void zeroStateForFailsafe() {
   zoneChangeInProgress = false;
   savedZone = 0;
   savedZoneMagic = SAVED_ZONE_MAGIC;
-  savedRoller = 0;
-  savedRollerMagic = SAVED_ROLLER_MAGIC;
+  savedMain = 0;
+  savedMainMagic = SAVED_MAIN_MAGIC;
   portEXIT_CRITICAL(&zoneMux);
   mainActive = false;
   nvsZonePending = false;
 
-  if (!otaIsRunning() && (nvsLastSavedZone != 0 || nvsLastSavedRoller != 0)) {
+  if (!otaIsRunning() && (nvsLastSavedZone != 0 || nvsLastSavedMain != 0)) {
     fanPrefs.begin("fan", false);
     fanPrefs.putInt("zone", 0);
     fanPrefs.putInt("main", 0);
     fanPrefs.end();
     nvsLastSavedZone = 0;
-    nvsLastSavedRoller = 0;
+    nvsLastSavedMain = 0;
     lastNvsSaveTime = millis();
   }
 }
@@ -1834,16 +1834,16 @@ void failSafeMode() {
 // ===================== BLE CMD HANDLER =====================
 void handleBleCommand() {
   int zone = -1;
-  int rollerCmd = -1;
+  int mainCmd = -1;
 
   portENTER_CRITICAL(&bleCmdMux);
   if (bleCmd.hasCommand) {
     zone = bleCmd.zone;
     bleCmd.hasCommand = false;
   }
-  if (bleCmd.hasRollerCommand) {
-    rollerCmd = bleCmd.rollerCommand;
-    bleCmd.hasRollerCommand = false;
+  if (bleCmd.hasMainCommand) {
+    mainCmd = bleCmd.mainCommand;
+    bleCmd.hasMainCommand = false;
   }
   portEXIT_CRITICAL(&bleCmdMux);
 
@@ -1851,12 +1851,12 @@ void handleBleCommand() {
     setFanZone(zone, SRC_BLE);
   }
 
-  if (rollerCmd != -1) {
-    if (rollerCmd == 1) {
+  if (mainCmd != -1) {
+    if (mainCmd == 1) {
       if (!relaysEnabled) enableRelays();
-      activateRoller();
+      activateMain();
     } else {
-      deactivateRoller();
+      deactivateMain();
       if (currentZone == 0) disableRelays();
     }
   }
@@ -2005,9 +2005,9 @@ void saveZoneToNvsIfStable() {
   if (stableSave) nvsZonePending = false;  // a stabil-pending elintézve, nem pörgünk rá
 
   bool zoneNeedsWrite   = (stableSave || forceSave) && (z != nvsLastSavedZone);
-  bool rollerNeedsWrite = (mainNow != nvsLastSavedRoller);
+  bool mainNeedsWrite = (mainNow != nvsLastSavedMain);
 
-  if (!zoneNeedsWrite && !rollerNeedsWrite) return;
+  if (!zoneNeedsWrite && !mainNeedsWrite) return;
 
   fanPrefs.begin("fan", false);
   if (zoneNeedsWrite) {
@@ -2015,9 +2015,9 @@ void saveZoneToNvsIfStable() {
     nvsLastSavedZone = z;
     lastNvsSaveTime = now;
   }
-  if (rollerNeedsWrite) {
+  if (mainNeedsWrite) {
     fanPrefs.putInt("main", mainNow);
-    nvsLastSavedRoller = mainNow;
+    nvsLastSavedMain = mainNow;
   }
   fanPrefs.end();
 
@@ -2026,7 +2026,7 @@ void saveZoneToNvsIfStable() {
     DBG_V(z);
     DBG_VLN((forceSave && !stableSave) ? " (force 5min)" : " (stable 30s)");
   }
-  if (rollerNeedsWrite) {
+  if (mainNeedsWrite) {
     DBG_P("NVS roller saved: ");
     DBG_VLN(mainNow);
   }
@@ -2119,19 +2119,19 @@ void checkFanRelayMismatch() {
 #endif  // FAN_SENSE_ENABLE
 
 // ===================== ROLLER CONTROL =====================
-void activateRoller() {
+void activateMain() {
   digitalWrite(RELAY_MAIN, LOW);
   mainActive = true;
-  savedRoller = 1;
-  savedRollerMagic = SAVED_ROLLER_MAGIC;
+  savedMain = 1;
+  savedMainMagic = SAVED_MAIN_MAGIC;
   DBG("Roller ON");
 }
 
-void deactivateRoller() {
+void deactivateMain() {
   digitalWrite(RELAY_MAIN, HIGH);
   mainActive = false;
-  savedRoller = 0;
-  savedRollerMagic = SAVED_ROLLER_MAGIC;
+  savedMain = 0;
+  savedMainMagic = SAVED_MAIN_MAGIC;
   DBG("Roller OFF");
 }
 
