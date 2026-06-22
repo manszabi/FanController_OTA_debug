@@ -1411,7 +1411,11 @@ void setup() {
       // mire visszagörgetni, ott csak fut tovább OTA nélkül.)
       if (otaPendingVerify) {
         diagLog("[boot] CRC FAIL on fresh OTA -> rollback");
-        esp_ota_mark_app_invalid_rollback_and_reboot();  // nem tér vissza
+        esp_ota_mark_app_invalid_rollback_and_reboot();  // sikeres rollbacknál nem tér vissza
+        // Ide csak akkor jutunk, ha nincs érvényes előző app a visszagörgetéshez:
+        // ekkor nincs mit tenni, fut tovább OTA nélkül (a verziót majd a
+        // health-check OK ág rögzíti, ahogy rollback nélkül is).
+        diagLog("[boot] rollback failed (no valid app) -> running, OTA off");
       }
 #endif
     }
