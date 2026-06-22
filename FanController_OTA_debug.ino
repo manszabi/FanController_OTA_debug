@@ -1327,10 +1327,7 @@ void setup() {
     DBG_V(got, HEX);
     DBG_VLN(otaCrcOk ? F(" OK") : F(" FAIL!"));
     if (!otaCrcOk) {
-      char e[80];
-      snprintf(e, sizeof(e), "[boot] CRC32 self-test FAIL got=0x%08X exp=0xCBF43926 -> OTA off",
-               (unsigned)got);
-      diagLog(e);
+      diagLog("[boot] CRC32 self-test FAIL -> OTA off");
     }
   }
 
