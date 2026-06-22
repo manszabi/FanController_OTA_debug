@@ -1397,7 +1397,7 @@ void setup() {
     DBG_V(got, HEX);
     DBG_VLN(otaCrcOk ? F(" OK") : F(" FAIL!"));
     if (!otaCrcOk) {
-      diagLog("[boot] CRC32 self-test FAIL -> OTA off");
+      diagLog("[boot] CRC32 self-test FAIL -> OTA off. Just serial update!");
     }
   }
 
