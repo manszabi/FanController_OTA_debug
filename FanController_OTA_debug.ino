@@ -28,20 +28,12 @@
 #define SERIAL_ENABLED 0
 #endif
 
-// ===================== OTA CONFIG =====================
-// CRC-FAIL esetén a frissen OTA-zott (PENDING_VERIFY) firmware kezelése:
-//   0 = NEM görget vissza: az eszköz fut tovább, OTA letiltva (alapértelmezett)
-//   1 = visszagörget az előző működő firmware-re (rollback + reboot)
+// CRC-FAIL utáni frissen OTA-zott firmware: 0=fut tovább OTA nélkül, 1=rollback+reboot
 #define OTA_ROLLBACK_ON_CRC_FAIL 0
 
-// ===================== RELÉ-TESZT CONFIG =====================
-// Bootkor (amikor az eszköz futásra ébred) a ventilátor-reléket sorban
-// be/ki kapcsolja önteszthez. A roller reléjét NEM kapcsolja, és az
-// opto-kimeneteket nem nézi. Rövid, hogy a boot ne nyúljon hosszúra.
-//   0 = ki
-//   1 = be (alapértelmezett)
+// Bootkori ventilátorrelé-önteszt (roller nélkül): 0=ki, 1=be
 #define RELAY_TEST_AT_BOOT 1
-#define RELAY_TEST_ON_MS  120   // egy ventilátorrelé bekapcsolva-tartása (ms)
+#define RELAY_TEST_ON_MS  120   // egy relé bekapcsolva-tartása (ms)
 #define RELAY_TEST_GAP_MS  60   // szünet két relé között (ms)
 
 // Ventilátorvezérlő debug: _P/_V = print (literál/érték), sima/_VLN = println (literál/érték)
@@ -97,15 +89,7 @@
 #define LED_RED 4
 #endif
 
-// ===================== FAN RELÉ BONTÓ-ÉRINTKEZŐ FIGYELÉS (H11AA1M) =====================
-// Az AC-érzékelés a relék BONTÓ (NC) érintkezőjén van. A ventilátor soros tekercsei
-// miatt egy aktív fokozatnál minden ágon megjelenik az AC, ezért a kimenet (NO) figyelése
-// nem megkülönböztethető — a bontó-érintkező adja, melyik relé NINCS behúzva.
-// Detektálás: a H11AA1M a bemenetén lévő AC-ra LOW-t húz (vezet az opto), AC nélkül a
-// felhúzó HIGH. Ezért az AC jelenlétét MINDIG a LOW mintából állapítjuk meg (volt-e LOW
-// az ablakban) — ez független az opto-kimeneti RC-szűrőtől, így a szűrőkondi
-// kiszáradása/szakadása esetén SEM ad téves eredményt (a régi HIGH-szint figyelés a
-// nullátmeneti tüskéktől megzavarodott volna).
+// FAN relé bontó-érintkező (NC) figyelés H11AA1M-mel: AC ⇒ LOW; az AC-t a LOW mintából detektáljuk
 #if FAN_SENSE_ENABLE
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
 #define FAN1_SENSE_PIN 19    // D? — Fan1 (RELAY_FAN1) bontó (NC) érintkezőjének figyelése
@@ -116,8 +100,7 @@
 #define FAN2_SENSE_PIN 7    // D5 — Fan2 (RELAY_FAN2) bontó (NC) érintkezőjének figyelése
 #define FAN3_SENSE_PIN 20   // D7 — Fan3 (RELAY_FAN3) bontó (NC) érintkezőjének figyelése
 #endif
-// Mit jelent az AC a sense-ágon: 0 = NC (bontó) bekötés → AC ⇒ a relé NINCS behúzva
-// (jelenlegi HW); 1 = NO (kimenet) bekötés → AC ⇒ a relé behúzva (régi HW).
+// AC jelentése a sense-ágon: 0=NC bekötés→AC⇒relé NINCS behúzva (jelen HW), 1=NO→AC⇒behúzva
 #define FAN_SENSE_AC_MEANS_ENGAGED 0
 
 const uint8_t fanSensePins[3] = { FAN1_SENSE_PIN, FAN2_SENSE_PIN, FAN3_SENSE_PIN };
@@ -1062,9 +1045,7 @@ void handleMultiClick() {
 
 // ===================== OTA SERVICE INIT =====================
 void otaInitService(BLEServer* server) {
-  if (!otaCrcOk) {
-    // CRC32 önteszt elhasalt → nem regisztráljuk az OTA szolgáltatást.
-    // Így a firmware-frissítés nem indítható, de az eszköz egyébként fut.
+  if (!otaCrcOk) {  // CRC-FAIL → nem regisztráljuk az OTA szolgáltatást
     DBG("OTA service NOT started: CRC32 self-test failed");
     return;
   }
@@ -1158,21 +1139,16 @@ String diagReadVersionLine() {
   return v;
 }
 
-// A stabil firmware-verziót a diag.log első sorába írja ([ver] <verzió>).
-// Ha már pontosan ez az első sor, nem ír (dedupe). A sor sticky: a trim és a
-// DIAGCLR is megőrzi. Streamelés közben nem nyúl a fájlhoz.
+// Stabil verziót a diag.log sticky első sorába írja ([ver] X), dedupe-olva
 void logStableVersion() {
   if (diagStreaming) return;
 
   char want[40];
   snprintf(want, sizeof(want), "[ver] %s", FIRMWARE_VERSION);
 
-  // Gyors dedupe: ha már pontosan ez az első sor, nincs teendő (gyakori eset,
-  // minden boot — így nem olvassuk be feleslegesen a teljes fájlt).
-  if (diagReadVersionLine() == want) return;
+  if (diagReadVersionLine() == want) return;  // már stimmel → nincs írás
 
-  // Verzió hiányzik vagy változott: újraírjuk. [ver] elöl, alatta a meglévő
-  // tartalom a régi [ver] sor nélkül.
+  // Újraírás: [ver] elöl, alatta a meglévő tartalom a régi [ver] sor nélkül
   String rest;
   if (FLASH.exists(DIAG_LOG_PATH)) {
     File f = FLASH.open(DIAG_LOG_PATH, FILE_READ);
@@ -1405,10 +1381,7 @@ void setup() {
   DBG(")");
   DBG("====================================");
 
-  // CRC32 önteszt: ismert vektorral ellenőrzi, hogy a crc32_zlib a szabványos
-  // eredményt adja-e. FAIL esetén nem állítjuk le az eszközt — csak az OTA-t
-  // tiltjuk le (a firmware-ellenőrzés megbízhatatlan lenne), és a hibát a
-  // diag.log-ba írjuk. Release buildben is fut, mert pont ott számít.
+  // CRC32 önteszt ismert vektorral; FAIL → OTA letiltva + diag.log (release-ben is fut)
   {
     const uint8_t tv[] = { '1','2','3','4','5','6','7','8','9' };
     uint32_t got = crc32_zlib(tv, 9);
@@ -1419,24 +1392,17 @@ void setup() {
     if (!otaCrcOk) {
       diagLog("[boot] CRC32 self-test FAIL -> OTA off. Just serial update!");
 #if OTA_ROLLBACK_ON_CRC_FAIL
-      // Ha frissen OTA-zott (PENDING_VERIFY) firmware-en bukik a CRC, görgessünk
-      // vissza az előző működő verzióra. (Már validált/soros firmware-nél nincs
-      // mire visszagörgetni, ott csak fut tovább OTA nélkül.)
+      // Frissen OTA-zott (PENDING_VERIFY) firmware CRC-bukásánál visszagörgetés
       if (otaPendingVerify) {
         diagLog("[boot] CRC FAIL on fresh OTA -> rollback");
-        esp_ota_mark_app_invalid_rollback_and_reboot();  // sikeres rollbacknál nem tér vissza
-        // Ide csak akkor jutunk, ha nincs érvényes előző app a visszagörgetéshez:
-        // ekkor nincs mit tenni, fut tovább OTA nélkül (a verziót majd a
-        // health-check OK ág rögzíti, ahogy rollback nélkül is).
+        esp_ota_mark_app_invalid_rollback_and_reboot();  // sikernél nem tér vissza
         diagLog("[boot] rollback failed (no valid app) -> running, OTA off");
       }
 #endif
     }
   }
 
-  // Minden validált bootnál rögzítjük a stabil firmware-verziót (dedupe miatt
-  // nem lesz dupla). PENDING_VERIFY (frissen OTA-zott, még nem stabil) esetén
-  // még nem írjuk — azt majd a health-check OK ág teszi meg.
+  // Validált bootnál rögzítjük a stabil verziót; PENDING_VERIFY-t a health-check intézi
   if (!otaPendingVerify) logStableVersion();
 
   if (resetReason != ESP_RST_POWERON &&
@@ -1476,9 +1442,7 @@ void setup() {
   }
 
 #if RELAY_TEST_AT_BOOT
-  // Relé-önteszt CSAK software-resetnél és gombébresztésnél fut. Hiba miatti
-  // újraindulásnál (brownout/WDT/panic/unknown) NEM, hogy ne zavarja a
-  // ventilátor-fokozat hiba utáni visszaállítását.
+  // Relé-önteszt csak SW-resetnél és gombébresztésnél (hiba-resetnél nem, a fokozat-visszaállítás miatt)
   bool relayTestWake = (resetReason == ESP_RST_SW) ||
                        (resetReason == ESP_RST_DEEPSLEEP &&
                         wakeup_reason == ESP_SLEEP_WAKEUP_GPIO);
@@ -2077,10 +2041,7 @@ void monitorFanRelays() {
   for (int i = 0; i < 3; i++) {
     int raw = digitalRead(fanSensePins[i]);
 
-    // AC a sense-ágon = volt-e LOW (opto-vezetés) az ablakban. A LOW mintára épülünk,
-    // mert AC jelenlétében a jel — RC-szűréssel stabil LOW, anélkül tüskés, de túlnyomóan
-    // LOW — mindig ad LOW mintát; a (nullátmeneti) HIGH-tüskéket szándékosan ignoráljuk,
-    // így a kimeneti szűrőkondi kiesése sem ad téves eredményt.
+    // AC a sense-ágon = volt-e LOW (opto-vezetés) az ablakban; a HIGH-tüskéket ignoráljuk
     if (raw == LOW) {
       fanSenseLastLow[i] = now;
       fanSenseSeen[i] = true;
@@ -2210,10 +2171,7 @@ void disableRelays() {
 }
 
 #if RELAY_TEST_AT_BOOT
-// Bootkori relé-önteszt: a ventilátor-reléket sorban be/ki kapcsolja.
-// A roller reléjét NEM kapcsolja (végig OFF), és az opto-kimeneteket nem
-// nézi (a monitorFanRelays amúgy is csak a loopban fut). A végén biztos
-// OFF állapot + táp ki + grace, hogy a teszt utáni első loop ne riasszon.
+// Bootkori relé-önteszt: FAN1→FAN2→FAN3 sorban be/ki, roller nélkül, opto-figyelés nélkül
 void relayBootTest() {
   DBG("Relay boot-test: start (roller kihagyva)");
 
