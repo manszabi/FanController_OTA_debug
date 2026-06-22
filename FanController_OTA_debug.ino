@@ -1494,7 +1494,6 @@ void loop() {
     otaPendingVerify = false;
     if (r == ESP_OK) {
       DBG("OTA health-check OK → firmware VALID (rollback lemondva)");
-      diagLog("[ota] healthcheck OK -> valid");
     } else {
       DBG_P("OTA mark valid FAILED: ");
       DBG_VLN(esp_err_to_name(r));
@@ -2162,15 +2161,6 @@ void enterDeepSleep(const char* reason) {
   if (otaPendingVerify) {
     esp_ota_mark_app_valid_cancel_rollback();
     otaPendingVerify = false;
-    diagLog("[ota] healthcheck OK (pre-sleep) -> valid");
-  }
-
-  {
-    char e[64];
-    snprintf(e, sizeof(e), "[sleep] src=%s heap=%u t=%lus",
-             reason, (unsigned)ESP.getFreeHeap(),
-             (unsigned long)(millis() / 1000));
-    diagLog(e);
   }
 
   if (bleEnabled) {
