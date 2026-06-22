@@ -1460,7 +1460,7 @@ void setup() {
   DBG("Relay state restore");
   fanPrefs.begin("fan", true);  // read-only
   nvsLastSavedZone = fanPrefs.getInt("zone", -1);
-  nvsLastSavedRoller = fanPrefs.getInt("roller", -1);  // [FIX-ESP-30] görgő (-1 = nincs)
+  nvsLastSavedRoller = fanPrefs.getInt("main", -1);  // [FIX-ESP-30] görgő (-1 = nincs)
   fanPrefs.end();
 
   if (lastBootResetReason == ESP_RST_BROWNOUT ||
@@ -1787,7 +1787,7 @@ void zeroStateForFailsafe() {
   if (!otaIsRunning() && (nvsLastSavedZone != 0 || nvsLastSavedRoller != 0)) {
     fanPrefs.begin("fan", false);
     fanPrefs.putInt("zone", 0);
-    fanPrefs.putInt("roller", 0);
+    fanPrefs.putInt("main", 0);
     fanPrefs.end();
     nvsLastSavedZone = 0;
     nvsLastSavedRoller = 0;
@@ -1998,14 +1998,14 @@ void saveZoneToNvsIfStable() {
   portENTER_CRITICAL(&zoneMux);
   z = currentZone;
   portEXIT_CRITICAL(&zoneMux);
-  int rollerNow = mainActive ? 1 : 0;  // bool, atomi olvasás
+  int mainNow = mainActive ? 1 : 0;  // bool, atomi olvasás
 
   bool stableSave = nvsZonePending && (now - zoneStableSince >= NVS_SAVE_STABLE_MS);
   bool forceSave  = (now - lastNvsSaveTime >= NVS_FORCE_SAVE_MS) && (z != nvsLastSavedZone);
   if (stableSave) nvsZonePending = false;  // a stabil-pending elintézve, nem pörgünk rá
 
   bool zoneNeedsWrite   = (stableSave || forceSave) && (z != nvsLastSavedZone);
-  bool rollerNeedsWrite = (rollerNow != nvsLastSavedRoller);
+  bool rollerNeedsWrite = (mainNow != nvsLastSavedRoller);
 
   if (!zoneNeedsWrite && !rollerNeedsWrite) return;
 
@@ -2016,8 +2016,8 @@ void saveZoneToNvsIfStable() {
     lastNvsSaveTime = now;
   }
   if (rollerNeedsWrite) {
-    fanPrefs.putInt("roller", rollerNow);
-    nvsLastSavedRoller = rollerNow;
+    fanPrefs.putInt("main", mainNow);
+    nvsLastSavedRoller = mainNow;
   }
   fanPrefs.end();
 
@@ -2028,7 +2028,7 @@ void saveZoneToNvsIfStable() {
   }
   if (rollerNeedsWrite) {
     DBG_P("NVS roller saved: ");
-    DBG_VLN(rollerNow);
+    DBG_VLN(mainNow);
   }
 }
 
