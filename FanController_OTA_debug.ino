@@ -16,7 +16,7 @@
 #include <Preferences.h>  // [FIX-ESP-21] NVS fokozat-mentés áramtalanításra
 
 // ===================== DEBUG CONFIG =====================
-#define DEBUG 1
+#define DEBUG 0
 #define OTA_DEBUG 0
 #define BOOT_DIAG 1
 #define FAN_SENSE_ENABLE 1
