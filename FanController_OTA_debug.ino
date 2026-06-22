@@ -28,6 +28,12 @@
 #define SERIAL_ENABLED 0
 #endif
 
+// ===================== OTA CONFIG =====================
+// CRC-FAIL esetén a frissen OTA-zott (PENDING_VERIFY) firmware kezelése:
+//   0 = NEM görget vissza: az eszköz fut tovább, OTA letiltva (alapértelmezett)
+//   1 = visszagörget az előző működő firmware-re (rollback + reboot)
+#define OTA_ROLLBACK_ON_CRC_FAIL 0
+
 // Ventilátorvezérlő debug: _P/_V = print (literál/érték), sima/_VLN = println (literál/érték)
 #if DEBUG
 #define DBG(x) Serial.println(F(x))
@@ -1399,6 +1405,15 @@ void setup() {
     DBG_VLN(otaCrcOk ? F(" OK") : F(" FAIL!"));
     if (!otaCrcOk) {
       diagLog("[boot] CRC32 self-test FAIL -> OTA off. Just serial update!");
+#if OTA_ROLLBACK_ON_CRC_FAIL
+      // Ha frissen OTA-zott (PENDING_VERIFY) firmware-en bukik a CRC, görgessünk
+      // vissza az előző működő verzióra. (Már validált/soros firmware-nél nincs
+      // mire visszagörgetni, ott csak fut tovább OTA nélkül.)
+      if (otaPendingVerify) {
+        diagLog("[boot] CRC FAIL on fresh OTA -> rollback");
+        esp_ota_mark_app_invalid_rollback_and_reboot();  // nem tér vissza
+      }
+#endif
     }
   }
 
