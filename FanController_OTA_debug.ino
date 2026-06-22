@@ -1044,7 +1044,6 @@ void otaInitService(BLEServer* server) {
     // CRC32 önteszt elhasalt → nem regisztráljuk az OTA szolgáltatást.
     // Így a firmware-frissítés nem indítható, de az eszköz egyébként fut.
     DBG("OTA service NOT started: CRC32 self-test failed");
-    diagLog("[ota] service disabled: CRC32 self-test failed");
     return;
   }
 
