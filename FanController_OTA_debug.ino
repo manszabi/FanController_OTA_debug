@@ -18,7 +18,7 @@
 // ===================== DEBUG CONFIG =====================
 #define DEBUG 0
 #define OTA_DEBUG 0
-#define BOOT_DIAG 1
+#define BOOT_DIAG 0
 #define FAN_SENSE_ENABLE 1
 
 // A Serial-t csak akkor inicializáljuk, ha valamelyik kimeneti csatorna aktív
