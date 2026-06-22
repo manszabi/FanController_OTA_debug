@@ -144,7 +144,6 @@ const unsigned long DIAG_CHUNK_INTERVAL = 25; // ms két csomag között (BLE fl
 #define OTA_CHARACTERISTIC_UUID_RX "fb1e4002-54ae-4a28-9f74-dfccb248601d"
 #define OTA_CHARACTERISTIC_UUID_TX "fb1e4003-54ae-4a28-9f74-dfccb248601d"
 
-static const char* TAG = "OTA_BOOT";
 static BLECharacteristic* pOtaTx = nullptr;
 static BLECharacteristic* pOtaRx = nullptr;
 
@@ -485,6 +484,7 @@ void ota_boot_flow() {
   esp_err_t st = esp_ota_get_state_partition(running, &state);
 
   if (st == ESP_OK) {
+#if DEBUG
     const char* stName;
     switch (state) {
       case ESP_OTA_IMG_NEW:            stName = "NEW"; break;
@@ -499,6 +499,7 @@ void ota_boot_flow() {
     DBG_P(" (0x");
     DBG_V(state, HEX);
     DBG(")");
+#endif
 
     // Health-check: NE validáljuk most — a loop/enterDeepSleep majd, stabil futás után (itt a SPIFFS sincs még mountolva)
     if (state == ESP_OTA_IMG_PENDING_VERIFY) {
@@ -528,6 +529,7 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   DBG("WDT delete (flash write may block)...");
   esp_task_wdt_delete(NULL);
 
+#if DEBUG
   const esp_partition_t* running = esp_ota_get_running_partition();
   const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
 
@@ -540,6 +542,7 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   DBG_P("  addr=0x"); DBG_VLN(next->address, HEX);
   DBG_P(" size="); DBG_V(next->size);
   DBG_P(" label="); DBG_VLN(next->label);
+#endif
 
   DBG_P("updateSize = ");
   DBG_VLN(updateSize);
@@ -1787,7 +1790,9 @@ void setFanZone(int zone, CommandSource source) {
   }
 
   unsigned long now = millis();
+#if DEBUG
   int fromZone = currentZone;
+#endif
 
   portENTER_CRITICAL(&zoneMux);
 
