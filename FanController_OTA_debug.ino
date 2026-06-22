@@ -1148,10 +1148,14 @@ void logStableVersion() {
   char want[40];
   snprintf(want, sizeof(want), "[ver] %s", FIRMWARE_VERSION);
 
-  // Meglévő tartalom beolvasása; közben a régi [ver] első sort eldobjuk.
-  String firstLine, rest;
-  bool fileExists = FLASH.exists(DIAG_LOG_PATH);
-  if (fileExists) {
+  // Gyors dedupe: ha már pontosan ez az első sor, nincs teendő (gyakori eset,
+  // minden boot — így nem olvassuk be feleslegesen a teljes fájlt).
+  if (diagReadVersionLine() == want) return;
+
+  // Verzió hiányzik vagy változott: újraírjuk. [ver] elöl, alatta a meglévő
+  // tartalom a régi [ver] sor nélkül.
+  String rest;
+  if (FLASH.exists(DIAG_LOG_PATH)) {
     File f = FLASH.open(DIAG_LOG_PATH, FILE_READ);
     if (f) {
       bool first = true;
@@ -1159,7 +1163,6 @@ void logStableVersion() {
         String line = f.readStringUntil('\n');
         if (first) {
           first = false;
-          firstLine = line;
           if (line.startsWith("[ver] ")) continue;  // régi verzió sor kihagyása
         }
         rest += line;
@@ -1168,8 +1171,6 @@ void logStableVersion() {
       f.close();
     }
   }
-
-  if (firstLine == want) return;  // már a helyes verzió áll elöl → nincs írás
 
   File w = FLASH.open(DIAG_LOG_PATH, FILE_WRITE);  // truncate
   if (w) {
