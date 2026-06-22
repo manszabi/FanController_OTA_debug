@@ -28,6 +28,22 @@
 #define SERIAL_ENABLED 0
 #endif
 
+// ===================== OTA CONFIG =====================
+// CRC-FAIL esetén a frissen OTA-zott (PENDING_VERIFY) firmware kezelése:
+//   0 = NEM görget vissza: az eszköz fut tovább, OTA letiltva (alapértelmezett)
+//   1 = visszagörget az előző működő firmware-re (rollback + reboot)
+#define OTA_ROLLBACK_ON_CRC_FAIL 0
+
+// ===================== RELÉ-TESZT CONFIG =====================
+// Bootkor (amikor az eszköz futásra ébred) a ventilátor-reléket sorban
+// be/ki kapcsolja önteszthez. A roller reléjét NEM kapcsolja, és az
+// opto-kimeneteket nem nézi. Rövid, hogy a boot ne nyúljon hosszúra.
+//   0 = ki
+//   1 = be (alapértelmezett)
+#define RELAY_TEST_AT_BOOT 1
+#define RELAY_TEST_ON_MS  120   // egy ventilátorrelé bekapcsolva-tartása (ms)
+#define RELAY_TEST_GAP_MS  60   // szünet két relé között (ms)
+
 // Ventilátorvezérlő debug: _P/_V = print (literál/érték), sima/_VLN = println (literál/érték)
 #if DEBUG
 #define DBG(x) Serial.println(F(x))
@@ -332,6 +348,9 @@ void activateRoller();
 void deactivateRoller();
 void enableRelays();
 void disableRelays();
+#if RELAY_TEST_AT_BOOT
+void relayBootTest();
+#endif
 void handleLEDs(unsigned long currentMillis);
 void enterDeepSleep(const char* reason);
 void handleClick();
@@ -1399,6 +1418,19 @@ void setup() {
     DBG_VLN(otaCrcOk ? F(" OK") : F(" FAIL!"));
     if (!otaCrcOk) {
       diagLog("[boot] CRC32 self-test FAIL -> OTA off. Just serial update!");
+#if OTA_ROLLBACK_ON_CRC_FAIL
+      // Ha frissen OTA-zott (PENDING_VERIFY) firmware-en bukik a CRC, görgessünk
+      // vissza az előző működő verzióra. (Már validált/soros firmware-nél nincs
+      // mire visszagörgetni, ott csak fut tovább OTA nélkül.)
+      if (otaPendingVerify) {
+        diagLog("[boot] CRC FAIL on fresh OTA -> rollback");
+        esp_ota_mark_app_invalid_rollback_and_reboot();  // sikeres rollbacknál nem tér vissza
+        // Ide csak akkor jutunk, ha nincs érvényes előző app a visszagörgetéshez:
+        // ekkor nincs mit tenni, fut tovább OTA nélkül (a verziót majd a
+        // health-check OK ág rögzíti, ahogy rollback nélkül is).
+        diagLog("[boot] rollback failed (no valid app) -> running, OTA off");
+      }
+#endif
     }
   }
 
@@ -1442,6 +1474,16 @@ void setup() {
   } else {
     DBG("Fault/SW reset → resuming normal operation");
   }
+
+#if RELAY_TEST_AT_BOOT
+  // Relé-önteszt CSAK software-resetnél és gombébresztésnél fut. Hiba miatti
+  // újraindulásnál (brownout/WDT/panic/unknown) NEM, hogy ne zavarja a
+  // ventilátor-fokozat hiba utáni visszaállítását.
+  bool relayTestWake = (resetReason == ESP_RST_SW) ||
+                       (resetReason == ESP_RST_DEEPSLEEP &&
+                        wakeup_reason == ESP_SLEEP_WAKEUP_GPIO);
+  if (relayTestWake) relayBootTest();
+#endif
 
   DBG("Button init");
   button.attachClick(handleClick);
@@ -2166,6 +2208,48 @@ void disableRelays() {
 #endif
   DBG("Relays OFF");
 }
+
+#if RELAY_TEST_AT_BOOT
+// Bootkori relé-önteszt: a ventilátor-reléket sorban be/ki kapcsolja.
+// A roller reléjét NEM kapcsolja (végig OFF), és az opto-kimeneteket nem
+// nézi (a monitorFanRelays amúgy is csak a loopban fut). A végén biztos
+// OFF állapot + táp ki + grace, hogy a teszt utáni első loop ne riasszon.
+void relayBootTest() {
+  DBG("Relay boot-test: start (roller kihagyva)");
+
+  // Minden relé OFF (aktív-LOW → HIGH=OFF), roller is OFF, majd táp be
+  digitalWrite(RELAY_FAN1, HIGH);
+  digitalWrite(RELAY_FAN2, HIGH);
+  digitalWrite(RELAY_FAN3, HIGH);
+  digitalWrite(RELAY_ROLLER, HIGH);
+  delay(10);
+  digitalWrite(RELAY_EN, HIGH);
+  delay(10);
+
+  const uint8_t fans[3] = { RELAY_FAN1, RELAY_FAN2, RELAY_FAN3 };
+  for (int i = 0; i < 3; i++) {
+    esp_task_wdt_reset();
+    DBG_P("Relay test FAN"); DBG_V(i + 1); DBG(" ON");
+    digitalWrite(fans[i], LOW);    // ON
+    delay(RELAY_TEST_ON_MS);
+    digitalWrite(fans[i], HIGH);   // OFF
+    delay(RELAY_TEST_GAP_MS);
+  }
+
+  // Biztos OFF + táp ki
+  digitalWrite(RELAY_FAN1, HIGH);
+  digitalWrite(RELAY_FAN2, HIGH);
+  digitalWrite(RELAY_FAN3, HIGH);
+  digitalWrite(RELAY_ROLLER, HIGH);
+  delay(10);
+  digitalWrite(RELAY_EN, LOW);
+  relaysEnabled = false;
+#if FAN_SENSE_ENABLE
+  fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
+#endif
+  DBG("Relay boot-test: done");
+}
+#endif
 
 // ===================== LED HANDLING =====================
 void handleLEDs(unsigned long currentMillis) {
