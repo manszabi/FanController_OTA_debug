@@ -144,7 +144,6 @@ const unsigned long DIAG_CHUNK_INTERVAL = 25; // ms két csomag között (BLE fl
 #define OTA_CHARACTERISTIC_UUID_RX "fb1e4002-54ae-4a28-9f74-dfccb248601d"
 #define OTA_CHARACTERISTIC_UUID_TX "fb1e4003-54ae-4a28-9f74-dfccb248601d"
 
-static const char* TAG = "OTA_BOOT";
 static BLECharacteristic* pOtaTx = nullptr;
 static BLECharacteristic* pOtaRx = nullptr;
 
@@ -154,6 +153,7 @@ static bool otaWriteFile = false;         // van-e CRC-OK, kiírásra váró par
 static int otaWriteLen = 0;            // [FIX-ESP-38] az aktuális part hossza (egy buffer)
 static int otaParts = 0, otaCur = 0, otaMTU = 0;  // összes part / aktuális part / part-méret
 static int otaMode = OTA_NORMAL_MODE;     // OTA állapotgép: NORMAL / UPDATE / INSTALL
+static bool otaCrcOk = true;              // CRC32 önteszt eredménye; FAIL esetén az OTA letiltva
 unsigned long otaReceivedBytes = 0, otaTotalBytes = 0;  // eddig kiírt / várt összes byte
 unsigned long otaLedTimer = 0;            // OTA-villogás időzítő
 bool otaLedState = false;                 // OTA-villogás LED állapot
@@ -484,6 +484,7 @@ void ota_boot_flow() {
   esp_err_t st = esp_ota_get_state_partition(running, &state);
 
   if (st == ESP_OK) {
+#if DEBUG
     const char* stName;
     switch (state) {
       case ESP_OTA_IMG_NEW:            stName = "NEW"; break;
@@ -498,6 +499,7 @@ void ota_boot_flow() {
     DBG_P(" (0x");
     DBG_V(state, HEX);
     DBG(")");
+#endif
 
     // Health-check: NE validáljuk most — a loop/enterDeepSleep majd, stabil futás után (itt a SPIFFS sincs még mountolva)
     if (state == ESP_OTA_IMG_PENDING_VERIFY) {
@@ -527,6 +529,7 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   DBG("WDT delete (flash write may block)...");
   esp_task_wdt_delete(NULL);
 
+#if DEBUG
   const esp_partition_t* running = esp_ota_get_running_partition();
   const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
 
@@ -539,6 +542,7 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   DBG_P("  addr=0x"); DBG_VLN(next->address, HEX);
   DBG_P(" size="); DBG_V(next->size);
   DBG_P(" label="); DBG_VLN(next->label);
+#endif
 
   DBG_P("updateSize = ");
   DBG_VLN(updateSize);
@@ -1039,6 +1043,13 @@ void handleMultiClick() {
 
 // ===================== OTA SERVICE INIT =====================
 void otaInitService(BLEServer* server) {
+  if (!otaCrcOk) {
+    // CRC32 önteszt elhasalt → nem regisztráljuk az OTA szolgáltatást.
+    // Így a firmware-frissítés nem indítható, de az eszköz egyébként fut.
+    DBG("OTA service NOT started: CRC32 self-test failed");
+    return;
+  }
+
   BLEService* pOtaService = server->createService(OTA_SERVICE_UUID);
 
   pOtaTx = pOtaService->createCharacteristic(
@@ -1307,15 +1318,21 @@ void setup() {
   DBG(")");
   DBG("====================================");
 
-#if DEBUG
+  // CRC32 önteszt: ismert vektorral ellenőrzi, hogy a crc32_zlib a szabványos
+  // eredményt adja-e. FAIL esetén nem állítjuk le az eszközt — csak az OTA-t
+  // tiltjuk le (a firmware-ellenőrzés megbízhatatlan lenne), és a hibát a
+  // diag.log-ba írjuk. Release buildben is fut, mert pont ott számít.
   {
     const uint8_t tv[] = { '1','2','3','4','5','6','7','8','9' };
     uint32_t got = crc32_zlib(tv, 9);
+    otaCrcOk = (got == 0xCBF43926);
     DBG_P("CRC32 self-test: 0x");
     DBG_V(got, HEX);
-    DBG_VLN(got == 0xCBF43926 ? F(" OK") : F(" FAIL!"));
+    DBG_VLN(otaCrcOk ? F(" OK") : F(" FAIL!"));
+    if (!otaCrcOk) {
+      diagLog("[boot] CRC32 self-test FAIL -> OTA off");
+    }
   }
-#endif
 
   if (resetReason != ESP_RST_POWERON &&
       resetReason != ESP_RST_DEEPSLEEP &&
@@ -1480,7 +1497,6 @@ void loop() {
     otaPendingVerify = false;
     if (r == ESP_OK) {
       DBG("OTA health-check OK → firmware VALID (rollback lemondva)");
-      diagLog("[ota] healthcheck OK -> valid");
     } else {
       DBG_P("OTA mark valid FAILED: ");
       DBG_VLN(esp_err_to_name(r));
@@ -1654,7 +1670,7 @@ void normalMode() {
   int f3 = digitalRead(RELAY_FAN3);
   if ((f1 == LOW) + (f2 == LOW) + (f3 == LOW) >= 2) {
     char e[48];
-    int n = snprintf(e, sizeof(e), "Relays");
+    int n = snprintf(e, sizeof(e), "[relay]");
     if (f1 == LOW) n += snprintf(e + n, sizeof(e) - n, " 1");
     if (f2 == LOW) n += snprintf(e + n, sizeof(e) - n, " 2");
     if (f3 == LOW) n += snprintf(e + n, sizeof(e) - n, " 3");
@@ -1774,7 +1790,9 @@ void setFanZone(int zone, CommandSource source) {
   }
 
   unsigned long now = millis();
+#if DEBUG
   int fromZone = currentZone;
+#endif
 
   portENTER_CRITICAL(&zoneMux);
 
@@ -1993,7 +2011,7 @@ void checkFanRelayMismatch() {
 #if FAN_SENSE_FAILSAFE_ON_STUCK
     if (stuck && !inGrace) {
       char e[48];
-      snprintf(e, sizeof(e), "Relay%d STUCK zone=%d", i + 1, currentZone);
+      snprintf(e, sizeof(e), "[relay] %d STUCK zone=%d", i + 1, currentZone);
       DBG_VLN(e);
       if (!diagStreaming) diagLog(e);
 
@@ -2148,15 +2166,7 @@ void enterDeepSleep(const char* reason) {
   if (otaPendingVerify) {
     esp_ota_mark_app_valid_cancel_rollback();
     otaPendingVerify = false;
-    diagLog("[ota] healthcheck OK (pre-sleep) -> valid");
-  }
-
-  {
-    char e[64];
-    snprintf(e, sizeof(e), "[sleep] src=%s heap=%u t=%lus",
-             reason, (unsigned)ESP.getFreeHeap(),
-             (unsigned long)(millis() / 1000));
-    diagLog(e);
+    DBG("OTA health-check OK (pre-sleep) → firmware VALID (rollback lemondva)");
   }
 
   if (bleEnabled) {
