@@ -2161,6 +2161,7 @@ void enterDeepSleep(const char* reason) {
   if (otaPendingVerify) {
     esp_ota_mark_app_valid_cancel_rollback();
     otaPendingVerify = false;
+    DBG("OTA health-check OK (pre-sleep) → firmware VALID (rollback lemondva)");
   }
 
   if (bleEnabled) {
