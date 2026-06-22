@@ -1667,7 +1667,7 @@ void normalMode() {
   int f3 = digitalRead(RELAY_FAN3);
   if ((f1 == LOW) + (f2 == LOW) + (f3 == LOW) >= 2) {
     char e[48];
-    int n = snprintf(e, sizeof(e), "[RELAYS]");
+    int n = snprintf(e, sizeof(e), "[relays]");
     if (f1 == LOW) n += snprintf(e + n, sizeof(e) - n, " 1");
     if (f2 == LOW) n += snprintf(e + n, sizeof(e) - n, " 2");
     if (f3 == LOW) n += snprintf(e + n, sizeof(e) - n, " 3");
@@ -2006,7 +2006,7 @@ void checkFanRelayMismatch() {
 #if FAN_SENSE_FAILSAFE_ON_STUCK
     if (stuck && !inGrace) {
       char e[48];
-      snprintf(e, sizeof(e), "[RELAYS] Relay%d STUCK zone=%d", i + 1, currentZone);
+      snprintf(e, sizeof(e), "[relays] Relay%d STUCK zone=%d", i + 1, currentZone);
       DBG_VLN(e);
       if (!diagStreaming) diagLog(e);
 
