@@ -31,7 +31,7 @@
 // CRC-FAIL utáni frissen OTA-zott firmware: 0=fut tovább OTA nélkül, 1=rollback+reboot
 #define OTA_ROLLBACK_ON_CRC_FAIL 0
 
-// Bootkori ventilátorrelé-önteszt (roller nélkül): 0=ki, 1=be
+// Bootkori ventilátorrelé-önteszt (RELAY_MAIN nélkül): 0=ki, 1=be
 #define RELAY_TEST_AT_BOOT 1
 #define RELAY_TEST_ON_MS  120   // egy relé bekapcsolva-tartása (ms)
 #define RELAY_TEST_GAP_MS  60   // szünet két relé között (ms)
@@ -71,7 +71,7 @@
 #define RELAY_FAN1 23
 #define RELAY_FAN2 22
 #define RELAY_FAN3 21
-#define RELAY_ROLLER 2
+#define RELAY_MAIN 2   // roller + ventilátor táp
 #define RELAY_EN 17
 #define BUTTON_PIN 1
 #define LED_YELLOW 0
@@ -82,7 +82,7 @@
 #define RELAY_FAN1 10
 #define RELAY_FAN2 9
 #define RELAY_FAN3 8
-#define RELAY_ROLLER 2
+#define RELAY_MAIN 2   // roller + ventilátor táp
 #define RELAY_EN 21
 #define BUTTON_PIN 3
 #define LED_YELLOW 5
@@ -1296,7 +1296,7 @@ void setup() {
   pinMode(RELAY_FAN1, OUTPUT);   digitalWrite(RELAY_FAN1, HIGH);
   pinMode(RELAY_FAN2, OUTPUT);   digitalWrite(RELAY_FAN2, HIGH);
   pinMode(RELAY_FAN3, OUTPUT);   digitalWrite(RELAY_FAN3, HIGH);
-  pinMode(RELAY_ROLLER, OUTPUT); digitalWrite(RELAY_ROLLER, HIGH);
+  pinMode(RELAY_MAIN, OUTPUT); digitalWrite(RELAY_MAIN, HIGH);
   relaysEnabled = false;
   
 #if SERIAL_ENABLED
@@ -1807,7 +1807,7 @@ void failSafeMode() {
   digitalWrite(RELAY_FAN1, HIGH);
   digitalWrite(RELAY_FAN2, HIGH);
   digitalWrite(RELAY_FAN3, HIGH);
-  digitalWrite(RELAY_ROLLER, HIGH);
+  digitalWrite(RELAY_MAIN, HIGH);
   digitalWrite(RELAY_EN, LOW);
 
   unsigned long nowfailSafeMode = millis();
@@ -2120,7 +2120,7 @@ void checkFanRelayMismatch() {
 
 // ===================== ROLLER CONTROL =====================
 void activateRoller() {
-  digitalWrite(RELAY_ROLLER, LOW);
+  digitalWrite(RELAY_MAIN, LOW);
   rollerActive = true;
   savedRoller = 1;
   savedRollerMagic = SAVED_ROLLER_MAGIC;
@@ -2128,7 +2128,7 @@ void activateRoller() {
 }
 
 void deactivateRoller() {
-  digitalWrite(RELAY_ROLLER, HIGH);
+  digitalWrite(RELAY_MAIN, HIGH);
   rollerActive = false;
   savedRoller = 0;
   savedRollerMagic = SAVED_ROLLER_MAGIC;
@@ -2140,7 +2140,7 @@ void enableRelays() {
   digitalWrite(RELAY_FAN1, HIGH);
   digitalWrite(RELAY_FAN2, HIGH);
   digitalWrite(RELAY_FAN3, HIGH);
-  digitalWrite(RELAY_ROLLER, HIGH);
+  digitalWrite(RELAY_MAIN, HIGH);
   delay(10);
   digitalWrite(RELAY_EN, HIGH);
   delay(10);
@@ -2157,7 +2157,7 @@ void disableRelays() {
   digitalWrite(RELAY_FAN1, HIGH);
   digitalWrite(RELAY_FAN2, HIGH);
   digitalWrite(RELAY_FAN3, HIGH);
-  digitalWrite(RELAY_ROLLER, HIGH);
+  digitalWrite(RELAY_MAIN, HIGH);
   delay(10);
   digitalWrite(RELAY_EN, LOW);
   delay(10);
@@ -2171,15 +2171,15 @@ void disableRelays() {
 }
 
 #if RELAY_TEST_AT_BOOT
-// Bootkori relé-önteszt: FAN1→FAN2→FAN3 sorban be/ki, roller nélkül, opto-figyelés nélkül
+// Bootkori relé-önteszt: FAN1→FAN2→FAN3 sorban be/ki, RELAY_MAIN nélkül, opto-figyelés nélkül
 void relayBootTest() {
-  DBG("Relay boot-test: start (roller kihagyva)");
+  DBG("Relay boot-test: start (RELAY_MAIN kihagyva)");
 
-  // Minden relé OFF (aktív-LOW → HIGH=OFF), roller is OFF, majd táp be
+  // Minden relé OFF (aktív-LOW → HIGH=OFF), RELAY_MAIN is OFF, majd táp be
   digitalWrite(RELAY_FAN1, HIGH);
   digitalWrite(RELAY_FAN2, HIGH);
   digitalWrite(RELAY_FAN3, HIGH);
-  digitalWrite(RELAY_ROLLER, HIGH);
+  digitalWrite(RELAY_MAIN, HIGH);
   delay(10);
   digitalWrite(RELAY_EN, HIGH);
   delay(10);
@@ -2198,7 +2198,7 @@ void relayBootTest() {
   digitalWrite(RELAY_FAN1, HIGH);
   digitalWrite(RELAY_FAN2, HIGH);
   digitalWrite(RELAY_FAN3, HIGH);
-  digitalWrite(RELAY_ROLLER, HIGH);
+  digitalWrite(RELAY_MAIN, HIGH);
   delay(10);
   digitalWrite(RELAY_EN, LOW);
   relaysEnabled = false;
