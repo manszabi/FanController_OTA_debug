@@ -1476,8 +1476,13 @@ void setup() {
   }
 
 #if RELAY_TEST_AT_BOOT
-  // Relé-önteszt: csak ha az eszköz futásra ébredt (az alvó bootok ide nem jutnak)
-  relayBootTest();
+  // Relé-önteszt CSAK software-resetnél és gombébresztésnél fut. Hiba miatti
+  // újraindulásnál (brownout/WDT/panic/unknown) NEM, hogy ne zavarja a
+  // ventilátor-fokozat hiba utáni visszaállítását.
+  bool relayTestWake = (resetReason == ESP_RST_SW) ||
+                       (resetReason == ESP_RST_DEEPSLEEP &&
+                        wakeup_reason == ESP_SLEEP_WAKEUP_GPIO);
+  if (relayTestWake) relayBootTest();
 #endif
 
   DBG("Button init");
