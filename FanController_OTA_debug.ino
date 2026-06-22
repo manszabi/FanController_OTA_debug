@@ -244,7 +244,7 @@ OneButton button(BUTTON_PIN, true, true);
 
 int currentZone = 0;                   // aktív ventilátor fokozat (0=ki, 1..3)
 int manualZoneIndex = 0;               // kézi módban a léptetett fokozat (dupla kattintás)
-bool rollerActive = false;             // görgő-relé aktív
+bool mainActive = false;             // RELAY_MAIN (roller + ventilátor táp) aktív
 bool relaysEnabled = false;            // tápengedély (RELAY_EN) be
 bool manualMode = false;               // kézi (gombos) mód, BLE nélkül
 esp_reset_reason_t lastBootResetReason = ESP_RST_UNKNOWN;  // [FIX-ESP-19] boot reset-ok mentése
@@ -975,7 +975,7 @@ void handleClick() {
 
   DBG("Button: click");
 
-  if (!rollerActive) {
+  if (!mainActive) {
     enableRelays();
     delay(100);
     activateRoller();
@@ -1624,7 +1624,7 @@ void normalMode() {
   currentMillis = nowNormalMode;
 
   bool hasActivity =
-    rollerActive && (bleConnected || manualMode) && (currentZone != 0 || manualZoneIndex != 0);
+    mainActive && (bleConnected || manualMode) && (currentZone != 0 || manualZoneIndex != 0);
 
   bool prevActive = wasActive;
   wasActive = hasActivity;
@@ -1781,7 +1781,7 @@ void zeroStateForFailsafe() {
   savedRoller = 0;
   savedRollerMagic = SAVED_ROLLER_MAGIC;
   portEXIT_CRITICAL(&zoneMux);
-  rollerActive = false;
+  mainActive = false;
   nvsZonePending = false;
 
   if (!otaIsRunning() && (nvsLastSavedZone != 0 || nvsLastSavedRoller != 0)) {
@@ -1998,7 +1998,7 @@ void saveZoneToNvsIfStable() {
   portENTER_CRITICAL(&zoneMux);
   z = currentZone;
   portEXIT_CRITICAL(&zoneMux);
-  int rollerNow = rollerActive ? 1 : 0;  // bool, atomi olvasás
+  int rollerNow = mainActive ? 1 : 0;  // bool, atomi olvasás
 
   bool stableSave = nvsZonePending && (now - zoneStableSince >= NVS_SAVE_STABLE_MS);
   bool forceSave  = (now - lastNvsSaveTime >= NVS_FORCE_SAVE_MS) && (z != nvsLastSavedZone);
@@ -2121,7 +2121,7 @@ void checkFanRelayMismatch() {
 // ===================== ROLLER CONTROL =====================
 void activateRoller() {
   digitalWrite(RELAY_MAIN, LOW);
-  rollerActive = true;
+  mainActive = true;
   savedRoller = 1;
   savedRollerMagic = SAVED_ROLLER_MAGIC;
   DBG("Roller ON");
@@ -2129,7 +2129,7 @@ void activateRoller() {
 
 void deactivateRoller() {
   digitalWrite(RELAY_MAIN, HIGH);
-  rollerActive = false;
+  mainActive = false;
   savedRoller = 0;
   savedRollerMagic = SAVED_ROLLER_MAGIC;
   DBG("Roller OFF");
@@ -2245,7 +2245,7 @@ void handleLEDs(unsigned long currentMillis) {
     }
   }
 
-  if (relaysEnabled && rollerActive) {
+  if (relaysEnabled && mainActive) {
     if (currentMillis - lastYellowToggle > LED_BLINK_INTERVAL) {
       yellowLedState = !yellowLedState;
       digitalWrite(LED_YELLOW, yellowLedState ? HIGH : LOW);
