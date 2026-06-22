@@ -1209,7 +1209,7 @@ void printBootDiag() {
   Serial.print(F(" ("));
   Serial.print(nvsValid ? F("valid") : F("none/invalid"));
   Serial.println(F(")"));
-  Serial.print(F("NVS roller: "));
+  Serial.print(F("NVS main: "));
   Serial.print(nvsLastSavedMain);
   Serial.print(F(" ("));
   Serial.print((nvsLastSavedMain == 0 || nvsLastSavedMain == 1) ? F("valid") : F("none/invalid"));
@@ -1484,7 +1484,7 @@ void setup() {
     }
 
     if (mainWas != 1) {
-      DBG("Boot after error reset, roller was NOT active → staying idle");
+      DBG("Boot after error reset, main was NOT active → staying idle");
     } else if (++errRestoreCount >= MAX_ERR_RESTORE) {
       // Túl sok gyors hibás reset (brownout-hurok gyanú) → nem állítunk vissza, idle marad; a számláló 30 s stabil futás után nullázódik
       DBG_P("Loop-break: consecutive error-restores=");
@@ -1495,7 +1495,7 @@ void setup() {
       diagLog(e);
     } else {
       restore_main= true;
-      DBG("Boot after BROWNOUT/UNKNOWN/WDT, roller was active → resuming");
+      DBG("Boot after BROWNOUT/UNKNOWN/WDT, main was active → resuming");
       enableRelays();
       delay(100);
       activateMain();
@@ -1801,7 +1801,7 @@ void failSafeMode() {
     failStartSet = true;
 
     zeroStateForFailsafe();
-    DBG("FAILSAFE entry → roller+fan state zeroed (RTC+NVS)");
+    DBG("FAILSAFE entry → main+fan state zeroed (RTC+NVS)");
   }
 
   digitalWrite(RELAY_FAN1, HIGH);
@@ -2027,7 +2027,7 @@ void saveZoneToNvsIfStable() {
     DBG_VLN((forceSave && !stableSave) ? " (force 5min)" : " (stable 30s)");
   }
   if (mainNeedsWrite) {
-    DBG_P("NVS roller saved: ");
+    DBG_P("NVS main saved: ");
     DBG_VLN(mainNow);
   }
 }
@@ -2118,13 +2118,13 @@ void checkFanRelayMismatch() {
 }
 #endif  // FAN_SENSE_ENABLE
 
-// ===================== ROLLER CONTROL =====================
+// ===================== MAIN CONTROL =====================
 void activateMain() {
   digitalWrite(RELAY_MAIN, LOW);
   mainActive = true;
   savedMain = 1;
   savedMainMagic = SAVED_MAIN_MAGIC;
-  DBG("Roller ON");
+  DBG("Main ON");
 }
 
 void deactivateMain() {
@@ -2132,7 +2132,7 @@ void deactivateMain() {
   mainActive = false;
   savedMain = 0;
   savedMainMagic = SAVED_MAIN_MAGIC;
-  DBG("Roller OFF");
+  DBG("Main OFF");
 }
 
 // ===================== RELAY CONTROL =====================
