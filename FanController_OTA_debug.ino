@@ -154,6 +154,7 @@ static bool otaWriteFile = false;         // van-e CRC-OK, kiírásra váró par
 static int otaWriteLen = 0;            // [FIX-ESP-38] az aktuális part hossza (egy buffer)
 static int otaParts = 0, otaCur = 0, otaMTU = 0;  // összes part / aktuális part / part-méret
 static int otaMode = OTA_NORMAL_MODE;     // OTA állapotgép: NORMAL / UPDATE / INSTALL
+static bool otaCrcOk = true;              // CRC32 önteszt eredménye; FAIL esetén az OTA letiltva
 unsigned long otaReceivedBytes = 0, otaTotalBytes = 0;  // eddig kiírt / várt összes byte
 unsigned long otaLedTimer = 0;            // OTA-villogás időzítő
 bool otaLedState = false;                 // OTA-villogás LED állapot
@@ -1039,6 +1040,14 @@ void handleMultiClick() {
 
 // ===================== OTA SERVICE INIT =====================
 void otaInitService(BLEServer* server) {
+  if (!otaCrcOk) {
+    // CRC32 önteszt elhasalt → nem regisztráljuk az OTA szolgáltatást.
+    // Így a firmware-frissítés nem indítható, de az eszköz egyébként fut.
+    DBG("OTA service NOT started: CRC32 self-test failed");
+    diagLog("[ota] service disabled: CRC32 self-test failed");
+    return;
+  }
+
   BLEService* pOtaService = server->createService(OTA_SERVICE_UUID);
 
   pOtaTx = pOtaService->createCharacteristic(
@@ -1307,15 +1316,24 @@ void setup() {
   DBG(")");
   DBG("====================================");
 
-#if DEBUG
+  // CRC32 önteszt: ismert vektorral ellenőrzi, hogy a crc32_zlib a szabványos
+  // eredményt adja-e. FAIL esetén nem állítjuk le az eszközt — csak az OTA-t
+  // tiltjuk le (a firmware-ellenőrzés megbízhatatlan lenne), és a hibát a
+  // diag.log-ba írjuk. Release buildben is fut, mert pont ott számít.
   {
     const uint8_t tv[] = { '1','2','3','4','5','6','7','8','9' };
     uint32_t got = crc32_zlib(tv, 9);
+    otaCrcOk = (got == 0xCBF43926);
     DBG_P("CRC32 self-test: 0x");
     DBG_V(got, HEX);
-    DBG_VLN(got == 0xCBF43926 ? F(" OK") : F(" FAIL!"));
+    DBG_VLN(otaCrcOk ? F(" OK") : F(" FAIL!"));
+    if (!otaCrcOk) {
+      char e[80];
+      snprintf(e, sizeof(e), "[boot] CRC32 self-test FAIL got=0x%08X exp=0xCBF43926 -> OTA off",
+               (unsigned)got);
+      diagLog(e);
+    }
   }
-#endif
 
   if (resetReason != ESP_RST_POWERON &&
       resetReason != ESP_RST_DEEPSLEEP &&
