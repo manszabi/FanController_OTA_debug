@@ -1091,6 +1091,10 @@ void diagLog(const char* line) {
     if (f) {
       size_t sz = f.size();
       if (sz > DIAG_LOG_MAX) {
+        // A [ver] (stabil firmware-verzió) sort mindig megőrizzük a fájl elején
+        String verLine = f.readStringUntil('\n');
+        bool hasVer = verLine.startsWith("[ver] ");
+
         uint8_t tmp[DIAG_LOG_MAX / 2];
         f.seek(sz - sizeof(tmp));
         int n = f.read(tmp, sizeof(tmp));
@@ -1101,6 +1105,7 @@ void diagLog(const char* line) {
         }
         File w = FLASH.open(DIAG_LOG_PATH, FILE_WRITE);  // FILE_WRITE = truncate
         if (w) {
+          if (hasVer) { w.print(verLine); w.print('\n'); }
           if (n > start) w.write(tmp + start, n - start);
           w.close();
         }
@@ -1117,6 +1122,61 @@ void diagLog(const char* line) {
     f.close();
   } else {
     DBG("diagLog write fail");
+  }
+}
+
+// A diag.log első sorát adja vissza, ha az egy [ver] sor; egyébként üres String.
+String diagReadVersionLine() {
+  String v;
+  if (FLASH.exists(DIAG_LOG_PATH)) {
+    File f = FLASH.open(DIAG_LOG_PATH, FILE_READ);
+    if (f) {
+      String first = f.readStringUntil('\n');
+      if (first.startsWith("[ver] ")) v = first;
+      f.close();
+    }
+  }
+  return v;
+}
+
+// A stabil firmware-verziót a diag.log első sorába írja ([ver] <verzió>).
+// Ha már pontosan ez az első sor, nem ír (dedupe). A sor sticky: a trim és a
+// DIAGCLR is megőrzi. Streamelés közben nem nyúl a fájlhoz.
+void logStableVersion() {
+  if (diagStreaming) return;
+
+  char want[40];
+  snprintf(want, sizeof(want), "[ver] %s", FIRMWARE_VERSION);
+
+  // Meglévő tartalom beolvasása; közben a régi [ver] első sort eldobjuk.
+  String firstLine, rest;
+  bool fileExists = FLASH.exists(DIAG_LOG_PATH);
+  if (fileExists) {
+    File f = FLASH.open(DIAG_LOG_PATH, FILE_READ);
+    if (f) {
+      bool first = true;
+      while (f.available()) {
+        String line = f.readStringUntil('\n');
+        if (first) {
+          first = false;
+          firstLine = line;
+          if (line.startsWith("[ver] ")) continue;  // régi verzió sor kihagyása
+        }
+        rest += line;
+        rest += '\n';
+      }
+      f.close();
+    }
+  }
+
+  if (firstLine == want) return;  // már a helyes verzió áll elöl → nincs írás
+
+  File w = FLASH.open(DIAG_LOG_PATH, FILE_WRITE);  // truncate
+  if (w) {
+    w.print(want);
+    w.print('\n');
+    w.print(rest);
+    w.close();
   }
 }
 
@@ -1185,7 +1245,14 @@ void handleDiagRequest() {
 
   if (diagClearRequested) {
     diagClearRequested = false;
-    if (FLASH.exists(DIAG_LOG_PATH)) FLASH.remove(DIAG_LOG_PATH);
+    // A [ver] sort megőrizzük: csak a hibabejegyzéseket töröljük
+    String ver = diagReadVersionLine();
+    if (ver.length()) {
+      File w = FLASH.open(DIAG_LOG_PATH, FILE_WRITE);  // truncate
+      if (w) { w.print(ver); w.print('\n'); w.close(); }
+    } else if (FLASH.exists(DIAG_LOG_PATH)) {
+      FLASH.remove(DIAG_LOG_PATH);
+    }
     pCharacteristic->setValue("DIAG_CLEARED");
     pCharacteristic->notify();
     DBG("Diag log cleared");
@@ -1333,6 +1400,11 @@ void setup() {
       diagLog("[boot] CRC32 self-test FAIL -> OTA off");
     }
   }
+
+  // Minden validált bootnál rögzítjük a stabil firmware-verziót (dedupe miatt
+  // nem lesz dupla). PENDING_VERIFY (frissen OTA-zott, még nem stabil) esetén
+  // még nem írjuk — azt majd a health-check OK ág teszi meg.
+  if (!otaPendingVerify) logStableVersion();
 
   if (resetReason != ESP_RST_POWERON &&
       resetReason != ESP_RST_DEEPSLEEP &&
@@ -1497,6 +1569,7 @@ void loop() {
     otaPendingVerify = false;
     if (r == ESP_OK) {
       DBG("OTA health-check OK → firmware VALID (rollback lemondva)");
+      logStableVersion();  // OTA után stabil → rögzítjük a verziót
     } else {
       DBG_P("OTA mark valid FAILED: ");
       DBG_VLN(esp_err_to_name(r));
@@ -2167,6 +2240,7 @@ void enterDeepSleep(const char* reason) {
     esp_ota_mark_app_valid_cancel_rollback();
     otaPendingVerify = false;
     DBG("OTA health-check OK (pre-sleep) → firmware VALID (rollback lemondva)");
+    logStableVersion();  // OTA után stabil → rögzítjük a verziót
   }
 
   if (bleEnabled) {
