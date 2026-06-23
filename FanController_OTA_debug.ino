@@ -1872,6 +1872,8 @@ void handleBleCommand() {
 }
 
 // ===================== ZONE CONTROL =====================
+// Megj.: a zónaváltás MAIN nélkül is megengedett (a relé kapcsol); a téves
+// reléfigyelést MAIN OFF alatt a checkFanRelayMismatch kezeli (!mainActive → kilép).
 void setFanZone(int zone, CommandSource source) {
   if (otaIsRunning()) {
     DBG("Zone change blocked (OTA)");
