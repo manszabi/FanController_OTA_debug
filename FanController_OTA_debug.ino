@@ -2154,6 +2154,18 @@ void deactivateMain() {
   mainActive = false;
   savedMain = 0;
   savedMainMagic = SAVED_MAIN_MAGIC;
+  // MAIN OFF → a ventilátor táp nélkül marad: fan-relék OFF + zóna nullázása (folyamatban lévő váltás törlése is)
+  digitalWrite(RELAY_FAN1, HIGH);
+  digitalWrite(RELAY_FAN2, HIGH);
+  digitalWrite(RELAY_FAN3, HIGH);
+  portENTER_CRITICAL(&zoneMux);
+  currentZone = 0;
+  pendingZone = 0;
+  zoneChanging = false;
+  zoneChangeInProgress = false;
+  savedZone = 0;
+  savedZoneMagic = SAVED_ZONE_MAGIC;
+  portEXIT_CRITICAL(&zoneMux);
   DBG("Main OFF");
 }
 
