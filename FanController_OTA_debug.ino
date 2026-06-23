@@ -2085,6 +2085,13 @@ void monitorFanRelays() {
 void checkFanRelayMismatch() {
   unsigned long now = millis();
 
+  // RELAY_MAIN OFF → nincs táp/AC a fan-ágakon, a sense értelmezhetetlen
+  // (AC_MEANS_ENGAGED=0-nál minden "behúzva"-nak látszik → téves STUCK). Ne értékeljünk.
+  if (!mainActive) {
+    for (int i = 0; i < 3; i++) { fanMismatchSince[i] = 0; fanNoacWarned[i] = false; }
+    return;
+  }
+
   bool inGrace = ((long)(fanSenseGraceUntil - now) > 0);
 
   for (int i = 0; i < 3; i++) {
