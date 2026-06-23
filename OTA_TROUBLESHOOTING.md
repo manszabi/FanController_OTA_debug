@@ -75,6 +75,19 @@ byte-ot (`updateSource.peek()`):
 Így a következő próbálkozásnál azonnal látszik, hogy a fájllal van baj
 (nem a titkosítással/partícióval).
 
+## Ha az OTA szolgáltatás meg sem jelenik (v7.14.0)
+
+A v7.14.0-tól a bootkori **CRC32 önteszt** (`crc32("123456789")==0xCBF43926`)
+**release buildben is** fut. Ha **bukik** (a fordítás/optimalizálás elrontotta a
+`crc32_zlib` rutint), a firmware **nem indítja el az OTA BLE-szolgáltatást** — mert a
+per-part CRC-ellenőrzés megbízhatatlan lenne. Tünet: a fő `FanController` BLE-szolgáltatás
+látszik és működik, de **OTA szolgáltatás nincs** (a küldő nem találja).
+
+- A diag naplóban (`DIAG?` / `diag_client.py`):
+  `[boot] CRC32 self-test FAIL -> OTA off. Just serial update!`
+- Megoldás: a firmware-t **USB-soros** úton flasheld (az OTA ilyenkor szándékosan tiltott).
+  Az eszköz egyébként normálisan működik (ventilátor, diag-lekérdezés).
+
 ## Lépések sorrendben
 
 1. **Frissítsd a firmware-t v7.6.4-re** USB-n (ez tartalmazza a magic-check-et).

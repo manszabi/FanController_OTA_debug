@@ -63,8 +63,8 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.13.0"
-#define FIRMWARE_DATE "2026-06-21"
+#define FIRMWARE_VERSION "7.14.0"
+#define FIRMWARE_DATE "2026-06-23"
 
 // ===================== PINS =====================      
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
@@ -1632,8 +1632,9 @@ void normalMode() {
 
   currentMillis = nowNormalMode;
 
+  // Aktivitás: MAIN be ÉS megy a ventilátor — automatikus (BLE) módban BLE-kapcsolat is kell, manuál módban nem. A roller önmagában nem aktivitás.
   bool hasActivity =
-    mainActive && (bleConnected || manualMode) && (currentZone != 0 || manualZoneIndex != 0);
+    mainActive && ((bleConnected && currentZone != 0) || (manualMode && manualZoneIndex != 0));
 
   bool prevActive = wasActive;
   wasActive = hasActivity;
