@@ -1872,6 +1872,8 @@ void handleBleCommand() {
 }
 
 // ===================== ZONE CONTROL =====================
+// Megj.: a zónaváltás MAIN nélkül is megengedett (a relé kapcsol); a téves
+// reléfigyelést MAIN OFF alatt a checkFanRelayMismatch kezeli (!mainActive → kilép).
 void setFanZone(int zone, CommandSource source) {
   if (otaIsRunning()) {
     DBG("Zone change blocked (OTA)");
@@ -2085,6 +2087,13 @@ void monitorFanRelays() {
 void checkFanRelayMismatch() {
   unsigned long now = millis();
 
+  // RELAY_MAIN OFF → nincs táp/AC a fan-ágakon, a sense értelmezhetetlen
+  // (AC_MEANS_ENGAGED=0-nál minden "behúzva"-nak látszik → téves STUCK). Ne értékeljünk.
+  if (!mainActive) {
+    for (int i = 0; i < 3; i++) { fanMismatchSince[i] = 0; fanNoacWarned[i] = false; }
+    return;
+  }
+
   bool inGrace = ((long)(fanSenseGraceUntil - now) > 0);
 
   for (int i = 0; i < 3; i++) {
@@ -2133,6 +2142,12 @@ void activateMain() {
   mainActive = true;
   savedMain = 1;
   savedMainMagic = SAVED_MAIN_MAGIC;
+#if FAN_SENSE_ENABLE
+  // Táp visszatért → az AC-nak idő kell stabilizálódni; grace + mismatch-állapot nullázás
+  fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
+  fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
+  fanNoacWarned[0] = fanNoacWarned[1] = fanNoacWarned[2] = false;
+#endif
   DBG("Main ON");
 }
 
@@ -2141,6 +2156,18 @@ void deactivateMain() {
   mainActive = false;
   savedMain = 0;
   savedMainMagic = SAVED_MAIN_MAGIC;
+  // MAIN OFF → a ventilátor táp nélkül marad: fan-relék OFF + zóna nullázása (folyamatban lévő váltás törlése is)
+  digitalWrite(RELAY_FAN1, HIGH);
+  digitalWrite(RELAY_FAN2, HIGH);
+  digitalWrite(RELAY_FAN3, HIGH);
+  portENTER_CRITICAL(&zoneMux);
+  currentZone = 0;
+  pendingZone = 0;
+  zoneChanging = false;
+  zoneChangeInProgress = false;
+  savedZone = 0;
+  savedZoneMagic = SAVED_ZONE_MAGIC;
+  portEXIT_CRITICAL(&zoneMux);
   DBG("Main OFF");
 }
 
