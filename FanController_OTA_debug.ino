@@ -1632,8 +1632,9 @@ void normalMode() {
 
   currentMillis = nowNormalMode;
 
+  // Aktivitás: MAIN be ÉS megy a ventilátor (BLE/normál: currentZone, vagy manuál módban manualZoneIndex). A roller önmagában nem aktivitás.
   bool hasActivity =
-    mainActive && (bleConnected || manualMode) && (currentZone != 0 || manualZoneIndex != 0);
+    mainActive && (currentZone != 0 || (manualMode && manualZoneIndex != 0));
 
   bool prevActive = wasActive;
   wasActive = hasActivity;
