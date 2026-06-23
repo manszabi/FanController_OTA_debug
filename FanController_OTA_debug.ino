@@ -2213,8 +2213,12 @@ void relayBootTest() {
   const uint8_t fans[3] = { RELAY_FAN1, RELAY_FAN2, RELAY_FAN3 };
   for (int i = 0; i < 3; i++) {
     esp_task_wdt_reset();
+    // Garancia: egyszerre csak EGY fan aktív — előbb mindet OFF, majd csak az egyet ON (a ciklusvégi GAP ad elengedési időt)
+    digitalWrite(RELAY_FAN1, HIGH);
+    digitalWrite(RELAY_FAN2, HIGH);
+    digitalWrite(RELAY_FAN3, HIGH);
     DBG_P("Relay test FAN"); DBG_V(i + 1); DBG(" ON");
-    digitalWrite(fans[i], LOW);    // ON
+    digitalWrite(fans[i], LOW);    // csak ez az egy ON
 #if FAN_SENSE_ENABLE
     relayTestWait(RELAY_TEST_ON_MS, &acHits);
 #else
