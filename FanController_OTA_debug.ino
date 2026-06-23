@@ -2253,6 +2253,8 @@ void relayBootTest() {
   if (acHits >= 10) {   // MAIN OFF mellett AC a bontón → MAIN relé beragadt
     DBG("main_relay stuck");
     diagLog("[relay] main stuck!");
+    zeroStateForFailsafe();          // beragadt MAIN → failsafe (mint a relé-mismatchnél)
+    currentState = STATE_FAILSAFE;
   }
 #endif
   DBG("Relay boot-test: done");
