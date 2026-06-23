@@ -137,7 +137,7 @@ körül ~**100 Hz**-cel rövid időre megszakad (HIGH-tüske). Ezért a program 
 figyel, és kifejezetten a **LOW mintát** keresi: ha az utóbbi `AC_SENSE_WINDOW_MS`
 (**40 ms**, > 1 hálózati periódus) ideje alatt **volt LOW minta**, akkor **van AC** a
 sense-ágon; ha végig HIGH, akkor **nincs**. Erre `80 ms` debounce és a relé-parancs
-utáni `1500 ms` türelmi idő épül.
+utáni `300 ms` türelmi idő (`FAN_SENSE_GRACE_MS`) épül (~2× a ~150 ms sense-beállásra).
 
 > **Miért robusztus a LOW-alapú detektálás (a HW-szűrőtől függetlenül):** AC
 > jelenlétében a jel — akár hardveresen szűrve (stabil LOW), akár szűretlenül
