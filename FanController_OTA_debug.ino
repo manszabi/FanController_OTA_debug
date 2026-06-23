@@ -255,6 +255,9 @@ unsigned long lastYellowToggle = 0;
 unsigned long lastHeartbeat = 0;
 unsigned long lastHeartbeat_red = 0;
 bool redLedState = false;
+#if RELAY_TEST_AT_BOOT
+bool relayTestPending = false;          // relé-önteszt esedékes (loopban, BLE kapcsolat előtt)
+#endif
 bool yellowLedState = false;
 bool heartbeatPulse = false;
 bool heartbeatPulse_red = false;
@@ -1442,11 +1445,10 @@ void setup() {
   }
 
 #if RELAY_TEST_AT_BOOT
-  // Relé-önteszt csak SW-resetnél és gombébresztésnél (hiba-resetnél nem, a fokozat-visszaállítás miatt)
-  bool relayTestWake = (resetReason == ESP_RST_SW) ||
-                       (resetReason == ESP_RST_DEEPSLEEP &&
-                        wakeup_reason == ESP_SLEEP_WAKEUP_GPIO);
-  if (relayTestWake) relayBootTest();
+  // Relé-önteszt csak SW-resetnél és gombébresztésnél (hiba-resetnél nem); a loopban fut, BLE kapcsolat előtt
+  relayTestPending = (resetReason == ESP_RST_SW) ||
+                     (resetReason == ESP_RST_DEEPSLEEP &&
+                      wakeup_reason == ESP_SLEEP_WAKEUP_GPIO);
 #endif
 
   DBG("Button init");
@@ -1562,6 +1564,13 @@ void setup() {
 void loop() {
   esp_task_wdt_reset();
   unsigned long now2 = millis();
+
+#if RELAY_TEST_AT_BOOT
+  if (relayTestPending && !bleConnected) {  // egyszeri relé-önteszt, BLE kapcsolat előtt
+    relayTestPending = false;
+    relayBootTest();
+  }
+#endif
 
   // [FIX-ESP-39] ERR_RESTORE_CLEAR_MS stabil futás után nullázzuk a hibás-reset számlálót (csak a gyors, ismétlődő reseteket számoljuk)
   if (!errRestoreCleared && now2 >= ERR_RESTORE_CLEAR_MS) {
@@ -2171,7 +2180,20 @@ void disableRelays() {
 }
 
 #if RELAY_TEST_AT_BOOT
-// Bootkori relé-önteszt: FAN1→FAN2→FAN3 sorban be/ki, RELAY_MAIN nélkül, opto-figyelés nélkül
+#if FAN_SENSE_ENABLE
+// ms ideig vár, közben mintázza a bontó-érintkezőket; LOW = AC (opto vezet) → acHits++
+static void relayTestWait(unsigned long ms, int* acHits) {
+  unsigned long t0 = millis();
+  while ((millis() - t0) < ms) {
+    for (int i = 0; i < 3; i++) {
+      if (digitalRead(fanSensePins[i]) == LOW) (*acHits)++;
+    }
+    delayMicroseconds(500);
+  }
+}
+#endif
+
+// Bootkori relé-önteszt: FAN1→FAN2→FAN3 sorban be/ki, RELAY_MAIN OFF; ha a bontón AC → MAIN beragadt
 void relayBootTest() {
   DBG("Relay boot-test: start (RELAY_MAIN kihagyva)");
 
@@ -2184,14 +2206,26 @@ void relayBootTest() {
   digitalWrite(RELAY_EN, HIGH);
   delay(10);
 
+#if FAN_SENSE_ENABLE
+  int acHits = 0;   // bontón mért AC-minták; MAIN OFF mellett bármennyi → beragadt MAIN
+#endif
+
   const uint8_t fans[3] = { RELAY_FAN1, RELAY_FAN2, RELAY_FAN3 };
   for (int i = 0; i < 3; i++) {
     esp_task_wdt_reset();
     DBG_P("Relay test FAN"); DBG_V(i + 1); DBG(" ON");
     digitalWrite(fans[i], LOW);    // ON
+#if FAN_SENSE_ENABLE
+    relayTestWait(RELAY_TEST_ON_MS, &acHits);
+#else
     delay(RELAY_TEST_ON_MS);
+#endif
     digitalWrite(fans[i], HIGH);   // OFF
+#if FAN_SENSE_ENABLE
+    relayTestWait(RELAY_TEST_GAP_MS, &acHits);
+#else
     delay(RELAY_TEST_GAP_MS);
+#endif
   }
 
   // Biztos OFF + táp ki
@@ -2204,6 +2238,10 @@ void relayBootTest() {
   relaysEnabled = false;
 #if FAN_SENSE_ENABLE
   fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
+  if (acHits >= 10) {   // MAIN OFF mellett AC a bontón → MAIN relé beragadt
+    DBG("main_relay stuck");
+    diagLog("[relay] main stuck!");
+  }
 #endif
   DBG("Relay boot-test: done");
 }
