@@ -2140,6 +2140,12 @@ void activateMain() {
   mainActive = true;
   savedMain = 1;
   savedMainMagic = SAVED_MAIN_MAGIC;
+#if FAN_SENSE_ENABLE
+  // Táp visszatért → az AC-nak idő kell stabilizálódni; grace + mismatch-állapot nullázás
+  fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
+  fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
+  fanNoacWarned[0] = fanNoacWarned[1] = fanNoacWarned[2] = false;
+#endif
   DBG("Main ON");
 }
 
