@@ -2181,13 +2181,21 @@ void disableRelays() {
 
 #if RELAY_TEST_AT_BOOT
 #if FAN_SENSE_ENABLE
-// ms ideig vár, közben mintázza a bontó-érintkezőket; LOW = AC (opto vezet) → acHits++
-static void relayTestWait(unsigned long ms, int* acHits) {
+// ms ideig vár, közben AC-t mintázik (LOW = opto vezet). onFan = épp bekapcsolt fan
+// indexe (-1 = egyik sem). MAIN OFF mellett bármilyen AC → beragadt MAIN; hogy melyik
+// vonalon, azt a bekötés (FAN_SENSE_AC_MEANS_ENGAGED) dönti el.
+static void relayTestWait(unsigned long ms, int onFan, int* acHits) {
   unsigned long t0 = millis();
   while ((millis() - t0) < ms) {
+#if FAN_SENSE_AC_MEANS_ENGAGED
+    // NO-bekötés: AC az ÉPP BEKAPCSOLT fan make-érintkezőjén → MAIN beragadt
+    if (onFan >= 0 && digitalRead(fanSensePins[onFan]) == LOW) (*acHits)++;
+#else
+    // NC-bekötés (bontó): AC bármely ÉPP KIKAPCSOLT fan bontó-érintkezőjén → MAIN beragadt
     for (int i = 0; i < 3; i++) {
-      if (digitalRead(fanSensePins[i]) == LOW) (*acHits)++;
+      if (i != onFan && digitalRead(fanSensePins[i]) == LOW) (*acHits)++;
     }
+#endif
     delayMicroseconds(500);
   }
 }
@@ -2220,13 +2228,13 @@ void relayBootTest() {
     DBG_P("Relay test FAN"); DBG_V(i + 1); DBG(" ON");
     digitalWrite(fans[i], LOW);    // csak ez az egy ON
 #if FAN_SENSE_ENABLE
-    relayTestWait(RELAY_TEST_ON_MS, &acHits);
+    relayTestWait(RELAY_TEST_ON_MS, i, &acHits);   // fan i bekapcsolva
 #else
     delay(RELAY_TEST_ON_MS);
 #endif
     digitalWrite(fans[i], HIGH);   // OFF
 #if FAN_SENSE_ENABLE
-    relayTestWait(RELAY_TEST_GAP_MS, &acHits);
+    relayTestWait(RELAY_TEST_GAP_MS, -1, &acHits); // mind kikapcsolva
 #else
     delay(RELAY_TEST_GAP_MS);
 #endif
