@@ -63,8 +63,8 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.13.0"
-#define FIRMWARE_DATE "2026-06-21"
+#define FIRMWARE_VERSION "7.14.0"
+#define FIRMWARE_DATE "2026-06-23"
 
 // ===================== PINS =====================      
 #if defined(CONFIG_IDF_TARGET_ESP32C6)

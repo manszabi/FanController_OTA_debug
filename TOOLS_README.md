@@ -12,13 +12,21 @@ pip install bleak
 
 ### 1. `diag_client.py` — Diag napló lekérdezése BLE-n
 
-A `/diag.log` fájlt olvassa le az eszközről (reset okok, lowmem események, sleep okokokat ír fel):
+A `/diag.log` fájlt olvassa le az eszközről. A napló **csak hibákat/diagnosztikát**
+tárol (a rutin „sikeres/info" sorok nem), és az **első sora** mindig a stabil
+firmware-verzió (`[ver]`, sticky):
 
 ```
-[boot]   reason=BROWNOUT(11) heap=... min=...
+[ver] 7.14.0
+[boot]  CRC32 self-test FAIL -> OTA off. Just serial update!
+[boot]  reason=BROWNOUT(11) heap=... min=...
+[boot]  loop-break idle n=...
 [lowmem] heap=... min=... t=...s
-[sleep]  src=button-longpress
-[ota]    bad magic=0x.. size=...
+[relay] 1 2 ACTIVE ST zone=...
+[relay] 3 STUCK zone=...
+[relay] main stuck!
+[ota]   bad magic=0x.. size=...
+[ota]   crc retry part=... try=...
 ```
 
 **Használat:**
@@ -201,5 +209,6 @@ Figyeld az `otaLoop()` vagy `stateMachineStep()` sorát, ha "leállást" suspect
 - **v7.6.3**: Diag napló bevezetése (reset ok, lowmem, sleep source)
 - **v7.6.4**: OTA magic-byte ellenőrzés a félrevezető "Decryption error" helyett
 - **v7.13.0**: AC-érzékelés a relé **bontó (NC) érintkezőjére** került (soros fan-tekercsek miatt), bekötés-leképezés a `FAN_SENSE_AC_MEANS_ENGAGED=0` makróval; a detektálás **LOW-alapú**, így az opto-kimeneti RC-szűrő kiesése sem ad téves STUCK-ot. A STUCK/NOAC diag-naplózás változatlan. A **soros kimenet egységesítve**: `Serial.begin` csak `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` valamelyikénél.
+- **v7.14.0**: `RELAY_ROLLER`→`RELAY_MAIN` (görgő + ventilátor táp); **bootkori relé-önteszt** beragadt fő relé detektálással (`[relay] main stuck!` → failsafe); **CRC32 önteszt → OTA letiltás** FAIL-nél; **diag.log csak hibák** + sticky `[ver]` verziósor + `[relay]` cimkék (a `[sleep]`/health-check-OK info-sorok kivéve).
 
-Frissítés után a diag napló `[sleep]`, `[boot]`, `[lowmem]`, `[ota]` sorokat fogja rögzíteni.
+Frissítés után a diag napló `[ver]`, `[boot]`, `[lowmem]`, `[relay]`, `[ota]` sorokat fog rögzíteni (info-sorok, pl. `[sleep]`, nincsenek).
