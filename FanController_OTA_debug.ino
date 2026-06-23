@@ -1322,7 +1322,7 @@ void setup() {
   pinMode(FAN1_SENSE_PIN, INPUT_PULLUP);
   pinMode(FAN2_SENSE_PIN, INPUT_PULLUP);
   pinMode(FAN3_SENSE_PIN, INPUT_PULLUP);
-  fanSenseGraceUntil = millis() + 3000;
+  fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;  // boot RC-beállás (a téves STUCK-ot a !mainActive kilépés fedi)
 #endif
   
   DBG("LED boot state");
