@@ -107,8 +107,8 @@ const uint8_t fanSensePins[3] = { FAN1_SENSE_PIN, FAN2_SENSE_PIN, FAN3_SENSE_PIN
 
 const unsigned long AC_SENSE_WINDOW_MS = 40;
 const unsigned long AC_SENSE_DEBOUNCE_MS = 80;
-const unsigned long FAN_SENSE_GRACE_MS = 1500;
-const unsigned long FAN_SENSE_MISMATCH_CONFIRM_MS = 1000;
+const unsigned long FAN_SENSE_GRACE_MS = 300;   // kapcsolás utáni türelmi idő (~2× a ~150 ms sense-beállásra)
+const unsigned long FAN_SENSE_MISMATCH_CONFIRM_MS = 300;   // NOAC megerősítés a grace UTÁN (a relé-átmenetet a grace fedi)
 #define FAN_SENSE_FAILSAFE_ON_STUCK 1   // STUCK → STATE_FAILSAFE (azonnal, türelmi idő után)
 #define FAN_SENSE_WARN_ON_NOAC      1   // NOAC  → figyelmeztetés + diag.log (failsafe NÉLKÜL)
 
@@ -1322,7 +1322,7 @@ void setup() {
   pinMode(FAN1_SENSE_PIN, INPUT_PULLUP);
   pinMode(FAN2_SENSE_PIN, INPUT_PULLUP);
   pinMode(FAN3_SENSE_PIN, INPUT_PULLUP);
-  fanSenseGraceUntil = millis() + 3000;
+  fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;  // boot RC-beállás (a téves STUCK-ot a !mainActive kilépés fedi)
 #endif
   
   DBG("LED boot state");

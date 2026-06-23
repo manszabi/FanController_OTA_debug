@@ -137,7 +137,7 @@ körül ~**100 Hz**-cel rövid időre megszakad (HIGH-tüske). Ezért a program 
 figyel, és kifejezetten a **LOW mintát** keresi: ha az utóbbi `AC_SENSE_WINDOW_MS`
 (**40 ms**, > 1 hálózati periódus) ideje alatt **volt LOW minta**, akkor **van AC** a
 sense-ágon; ha végig HIGH, akkor **nincs**. Erre `80 ms` debounce és a relé-parancs
-utáni `1500 ms` türelmi idő épül.
+utáni `300 ms` türelmi idő (`FAN_SENSE_GRACE_MS`) épül (~2× a ~150 ms sense-beállásra).
 
 > **Miért robusztus a LOW-alapú detektálás (a HW-szűrőtől függetlenül):** AC
 > jelenlétében a jel — akár hardveresen szűrve (stabil LOW), akár szűretlenül
@@ -160,10 +160,11 @@ reagál (`DIAG?` paranccsal a `diag.log` lekérdezhető):
   **szinkron** (flush) íródik a failsafe-be lépés **előtt**, így a naplózás nem
   szakad félbe. (A `fanRelayEngaged` ekkor már a 40 ms ablak + 80 ms debounce-on átment.)
 - **NOAC** – a zóna **ON**, de a mérés **inaktív** → relé/biztosíték/ventilátor/hálózat hiba.
-  Reakció: `FAN_SENSE_MISMATCH_CONFIRM_MS` (**1000 ms**) debounce után **egyszeri**
-  figyelmeztetés + `diag.log`, **failsafe NÉLKÜL** — a rendszer fut tovább. A latch
-  (`fanNoacWarned`) megakadályozza az ismételt naplózást, az eltérés megszűntével
-  (vagy relé-parancsnál) újraélesedik.
+  Reakció: `FAN_SENSE_MISMATCH_CONFIRM_MS` (**300 ms**) debounce után **egyszeri**
+  figyelmeztetés + `diag.log`, **failsafe NÉLKÜL** — a rendszer fut tovább. A debounce
+  a grace **után** számol (a két relé közti break-before-make átmenetet a grace fedi,
+  ezért az nem ad téves NOAC-ot). A latch (`fanNoacWarned`) megakadályozza az ismételt
+  naplózást, az eltérés megszűntével (vagy relé-parancsnál) újraélesedik.
 
 > **Fő relé OFF → nincs értékelés (7.14.0):** mivel a `RELAY_MAIN` adja a ventilátor
 > tápját, **kikapcsolt fő relénél nincs AC** a fan-ágakon, így a sense értelmezhetetlen
