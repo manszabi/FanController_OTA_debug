@@ -105,8 +105,8 @@
 
 const uint8_t fanSensePins[3] = { FAN1_SENSE_PIN, FAN2_SENSE_PIN, FAN3_SENSE_PIN };
 
-const unsigned long AC_SENSE_WINDOW_MS = 40;
-const unsigned long AC_SENSE_DEBOUNCE_MS = 80;
+const unsigned long AC_SENSE_WINDOW_MS = 40;   // > 1 hálózati periódus (20 ms): a nullátmeneti HIGH-tüske ne látsszon "nincs AC"-nak
+const unsigned long AC_SENSE_DEBOUNCE_MS = 80;  // relé-kapcsolás/perdülés kiszűrése a fanRelayEngaged átbillenése előtt
 const unsigned long FAN_SENSE_GRACE_MS = 300;   // kapcsolás utáni türelmi idő (~2× a ~150 ms sense-beállásra)
 const unsigned long FAN_SENSE_MISMATCH_CONFIRM_MS = 300;   // NOAC megerősítés a grace UTÁN (a relé-átmenetet a grace fedi)
 #define FAN_SENSE_FAILSAFE_ON_STUCK 1   // STUCK → STATE_FAILSAFE (azonnal, türelmi idő után)
@@ -129,14 +129,14 @@ bool fanNoacWarned[3] = { false, false, false };      // NOAC: figyelmeztettünk
 #define OTA_UPDATE_MODE 1
 #define OTA_INSTALL_MODE 2
 
-static const size_t OTA_BUF_SIZE = 16384;
+static const size_t OTA_BUF_SIZE = 16384;  // OTA part-puffer (16 KB): átviteli sebesség vs. RAM egyensúly, csak OTA alatt foglalt
 static uint8_t* otaBuf = nullptr;
 
 // ===================== DIAG LOG (FIX-ESP-14) =====================
 #define DIAG_LOG_PATH "/diag.log"
-const size_t DIAG_LOG_MAX = 512;              // a napló max. mérete (byte) – kicsi
-const uint32_t LOW_HEAP_THRESHOLD = 20000;    // ez alatt "kevés memória" bejegyzés
-const size_t DIAG_CHUNK_SIZE = 20;            // BLE-n egy csomagban küldött byte
+const size_t DIAG_LOG_MAX = 512;              // napló max. mérete: kicsi a SPIFFS-hely/kopás miatt (körkörös, [ver] sticky)
+const uint32_t LOW_HEAP_THRESHOLD = 20000;    // ~20 kB szabad heap alatt "kevés memória" bejegyzés (BLE/OTA tartalék)
+const size_t DIAG_CHUNK_SIZE = 20;            // = alap BLE MTU (23) − 3 ATT overhead → fragmentálás nélkül átmegy
 const unsigned long DIAG_CHUNK_INTERVAL = 25; // ms két csomag között (BLE flow control)
 
 #define OTA_SERVICE_UUID "fb1e4001-54ae-4a28-9f74-dfccb248601d"
@@ -195,9 +195,9 @@ enum SystemState {
 SystemState currentState = STATE_NORMAL;  // fő állapotgép: NORMAL / FAILSAFE
 
 unsigned long lastCheck = 0;
-const unsigned long checkInterval = 20;    // állapotgép-lépés periódusa (ms)
+const unsigned long checkInterval = 20;    // állapotgép-lépés periódusa, ~50 Hz: gyors reakció, de kíméli a CPU-t/BLE-t
 unsigned long lastBlink = 0;
-const unsigned long blinkInterval = 100;
+const unsigned long blinkInterval = 100;   // failsafe LED-villogás fél-periódus (~5 Hz, jól látható riasztás)
 bool blinkState = false;
 unsigned long failStart = 0;               // failsafe belépés ideje (timeout-hoz)
 bool failStartSet = false;
@@ -206,17 +206,18 @@ volatile BleCommand bleCmd = { false, 0, false, 0 };
 portMUX_TYPE bleCmdMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ===================== TIMERS =====================
-const unsigned long INACTIVITY_MS = 3600000;
-const unsigned long RELAY_SWITCH_DELAY_MS = 10;
-const unsigned long LED_BLINK_INTERVAL = 500;
-const unsigned long HEARTBEAT_INTERVAL = 2000;
-const unsigned long HEARTBEAT_PULSE = 100;
-const unsigned long BLE_RESTART_DELAY = 500;
+const unsigned long INACTIVITY_MS = 3600000;     // 1 óra tétlenség → deep sleep (edzéshossz felső becslése)
+const unsigned long RELAY_SWITCH_DELAY_MS = 10;  // break-before-make szünet (tényleges ~20 ms a checkInterval miatt)
+const unsigned long LED_BLINK_INTERVAL = 500;    // normál státusz-LED villogás (~1 Hz)
+const unsigned long HEARTBEAT_INTERVAL = 2000;   // életjel-pulzus periódusa
+const unsigned long HEARTBEAT_PULSE = 100;       // életjel-pulzus hossza
+const unsigned long BLE_RESTART_DELAY = 500;     // BLE-stack stabilizálódása újraindítás előtt
+const unsigned long FAILSAFE_TIMEOUT_MS = 10000; // failsafe-ben ennyi LED-villogás után deep sleep (elég a hiba jelzésére)
 
 volatile bool zoneChanging = false;
 volatile unsigned long bleDisconnectTime = 0;
 unsigned long currentMillis = 0;
-const unsigned long BLE_ZONE_TIMEOUT_MS = 720000;
+const unsigned long BLE_ZONE_TIMEOUT_MS = 720000;  // BLE elszállás után 12 perccel mindent lekapcsol, ha zóna aktív (biztonsági)
 
 // ===================== FAN BLE UUIDs =====================
 #define SERVICE_UUID "0000ffe0-0000-1000-8000-00805f9b34fb"
@@ -227,8 +228,8 @@ const unsigned long BLE_ZONE_TIMEOUT_MS = 720000;
 #if !defined(BLE_AUTH_PIN)
 #warning "BLE_AUTH_PIN is empty – authentication disabled!"
 #endif
-#define MAX_AUTH_ATTEMPTS 5
-#define AUTH_LOCKOUT_TIME_MS 60000
+#define MAX_AUTH_ATTEMPTS 5         // ennyi hibás PIN után zárolás (brute-force ellen)
+#define AUTH_LOCKOUT_TIME_MS 60000  // 60 s zárolás a hibás kísérletek után
 
 bool isAuthenticated = false;
 int authAttempts = 0;
@@ -271,7 +272,7 @@ int pendingZone = 0;                   // a váltás célfokozata (handleZoneCha
 unsigned long lastPrint1 = 0;
 unsigned long lastPrint2 = 0;
 unsigned long lastPrint3 = 0;
-const unsigned long printInterval = 30000;
+const unsigned long printInterval = 30000;  // státusz-kiírás periódusa a soros logba (ne spammeljen)
 bool wasActive = false;
 
 RTC_NOINIT_ATTR uint32_t bootMagic;
@@ -313,7 +314,7 @@ enum CommandSource {
 
 CommandSource activeSource = SRC_NONE;
 unsigned long sourceLockedUntil = 0;
-const unsigned long SOURCE_LOCK_MS = 2000;
+const unsigned long SOURCE_LOCK_MS = 2000;  // forrás-prioritás zárolás: egy parancsforrást ennyi ideig nem írhat felül alacsonyabb prioritású (BLE vs gomb)
 
 struct Timer {
   unsigned long last = 0;
@@ -1835,7 +1836,7 @@ void failSafeMode() {
     digitalWrite(LED_YELLOW, blinkState);
   }
 
-  if (nowfailSafeMode - failStart >= 10000) {
+  if (nowfailSafeMode - failStart >= FAILSAFE_TIMEOUT_MS) {
     DBG("Failsafe timeout → sleep");
     enterDeepSleep("failsafe-timeout");
   }

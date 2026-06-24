@@ -245,7 +245,7 @@ jelez (zóna OFF, de aktív mérés), vagy a **bootkori relé-önteszt beragadt 
 
 - minden relé lekapcsol (`RELAY_EN` LOW),
 - mindkét LED ~2 Hz-cel villog,
-- **60 mp** után az eszköz deep sleepbe megy (`src=failsafe-timeout`).
+- **10 mp** után az eszköz deep sleepbe megy (`FAILSAFE_TIMEOUT_MS`, `src=failsafe-timeout`).
 
 > **Failsafe belépéskor a fő relé (görgő/táp) ÉS a fokozat állapota minden tárolóban
 > lenullázódik** (`[FIX-ESP-30b]`): logikai állapot (`currentZone=0`,
@@ -261,7 +261,7 @@ Az eszköz deep sleepbe lép:
 
 - **gombos hosszú nyomásra** (`button-longpress`),
 - **1 óra tétlenség** után (`idle-timeout`, csak ha nincs BLE és nincs kézi mód),
-- **failsafe** 60 mp után (`failsafe-timeout`).
+- **failsafe** 10 mp után (`failsafe-timeout`).
 
 > **Mi számít „aktivitásnak" (a tétlenség-időzítő nullázásához):** a **fő relé be**
 > ÉS megy a ventilátor — automatikus (BLE) módban **élő BLE-kapcsolattal**
@@ -532,7 +532,7 @@ arduino-cli lib install OneButton          # vagy GitHubról, ha a registry nem 
 | `NVS_SAVE_STABLE_MS` | 30 000 ms | NVS-írás előtti stabilitási idő |
 | `INACTIVITY_MS` | 3 600 000 ms (1 óra) | tétlenségi deep sleep |
 | `BLE_ZONE_TIMEOUT_MS` | 720 000 ms (12 perc) | BLE-kapcsolat nélküli fokozat-időkorlát |
-| Failsafe timeout | 60 000 ms | failsafe → deep sleep |
+| `FAILSAFE_TIMEOUT_MS` | 10 000 ms | failsafe → deep sleep |
 | `MAX_AUTH_ATTEMPTS` / lockout | 5 / 60 000 ms | BLE auth védelem |
 | `LOW_HEAP_THRESHOLD` | 20 000 byte | lowmem napló küszöb |
 
