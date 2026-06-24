@@ -235,45 +235,49 @@ bool isAuthenticated = false;
 int authAttempts = 0;
 unsigned long lockoutStart = 0;
 
-// ===================== GLOBALS =====================
+// ===================== BLE ÁLLAPOT =====================
 BLEServer* pServer = NULL;
 BLECharacteristic* pCharacteristic = NULL;
 volatile bool bleConnected = false;
 volatile bool bleEnabled = true;
-
-OneButton button(BUTTON_PIN, true, true);
-
-int currentZone = 0;                   // aktív ventilátor fokozat (0=ki, 1..3)
-int manualZoneIndex = 0;               // kézi módban a léptetett fokozat (dupla kattintás)
-bool mainActive = false;             // RELAY_MAIN (roller + ventilátor táp) aktív
-bool relaysEnabled = false;            // tápengedély (RELAY_EN) be
-bool manualMode = false;               // kézi (gombos) mód, BLE nélkül
-esp_reset_reason_t lastBootResetReason = ESP_RST_UNKNOWN;  // [FIX-ESP-19] boot reset-ok mentése
-
-volatile unsigned long lastActivityTime = 0;
-unsigned long lastRedToggle = 0;
-unsigned long lastYellowToggle = 0;
-unsigned long lastHeartbeat = 0;
-unsigned long lastHeartbeat_red = 0;
-bool redLedState = false;
-#if RELAY_TEST_AT_BOOT
-bool relayTestPending = false;          // relé-önteszt esedékes (loopban, BLE kapcsolat előtt)
-#endif
-bool yellowLedState = false;
-bool heartbeatPulse = false;
-bool heartbeatPulse_red = false;
 volatile bool bleNeedsRestart = false;
 volatile unsigned long bleRestartTime = 0;
 
+OneButton button(BUTTON_PIN, true, true);
+
+// ===================== FAN / RELÉ / ZÓNA ÁLLAPOT =====================
+int currentZone = 0;                   // aktív ventilátor fokozat (0=ki, 1..3)
+int manualZoneIndex = 0;               // kézi módban a léptetett fokozat (dupla kattintás)
+bool manualMode = false;               // kézi (gombos) mód, BLE nélkül
+bool mainActive = false;               // RELAY_MAIN (roller + ventilátor táp) aktív
+bool relaysEnabled = false;            // tápengedély (RELAY_EN) be
 bool zoneChangeInProgress = false;     // folyamatban lévő break-before-make fokozatváltás
 unsigned long zoneChangeStart = 0;     // a váltás indításának ideje (ms)
 int pendingZone = 0;                   // a váltás célfokozata (handleZoneChange élesíti)
+#if RELAY_TEST_AT_BOOT
+bool relayTestPending = false;          // relé-önteszt esedékes (loopban, BLE kapcsolat előtt)
+#endif
 
+// ===================== AKTIVITÁS / BOOT =====================
+volatile unsigned long lastActivityTime = 0;
+bool wasActive = false;
+esp_reset_reason_t lastBootResetReason = ESP_RST_UNKNOWN;  // [FIX-ESP-19] boot reset-ok mentése
+
+// ===================== LED / HEARTBEAT =====================
+unsigned long lastRedToggle = 0;
+unsigned long lastYellowToggle = 0;
+bool redLedState = false;
+bool yellowLedState = false;
+unsigned long lastHeartbeat = 0;
+unsigned long lastHeartbeat_red = 0;
+bool heartbeatPulse = false;
+bool heartbeatPulse_red = false;
+
+// ===================== SOROS STÁTUSZ-KIÍRÁS =====================
 unsigned long lastPrint1 = 0;
 unsigned long lastPrint2 = 0;
 unsigned long lastPrint3 = 0;
 const unsigned long printInterval = 30000;  // státusz-kiírás periódusa a soros logba (ne spammeljen)
-bool wasActive = false;
 
 RTC_NOINIT_ATTR uint32_t bootMagic;
 #define BOOT_MAGIC 0xDEADBEEF
