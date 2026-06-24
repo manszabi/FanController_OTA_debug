@@ -167,6 +167,7 @@ unsigned long otaRebootAt = 0;
 
 // [OTA health-check] true: frissen OTA-zott, még meg nem erősített (PENDING_VERIFY) firmware fut
 bool otaPendingVerify = false;
+const unsigned long OTA_VERIFY_HEALTHY_MS = 30000;   // OTA health-check: ennyi stabil futás után validál
 
 bool otaInstallWaiting = false;
 unsigned long otaInstallWaitUntil = 0;
@@ -296,7 +297,6 @@ RTC_NOINIT_ATTR int errRestoreCount;       // egymást követő gyors hibás res
 #define ERR_RESTORE_MAGIC 0x10075EED
 const int MAX_ERR_RESTORE = 3;                       // ennyiedik egymást követőnél már idle
 const unsigned long ERR_RESTORE_CLEAR_MS = 30000;    // ennyi stabil futás után nullázzuk
-const unsigned long OTA_VERIFY_HEALTHY_MS = 30000;   // OTA health-check: ennyi stabil futás után validál
 bool errRestoreCleared = false;
 bool restore_main = false;
 
