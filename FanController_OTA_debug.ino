@@ -8,7 +8,7 @@
 #include "esp_sleep.h"
 #include "esp_task_wdt.h"
 #include <Update.h>
-#include "FS.h"    
+#include "FS.h"
 #include "SPIFFS.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
@@ -33,8 +33,8 @@
 
 // Bootkori ventilátorrelé-önteszt (RELAY_MAIN nélkül): 0=ki, 1=be
 #define RELAY_TEST_AT_BOOT 1
-#define RELAY_TEST_ON_MS  120   // egy relé bekapcsolva-tartása (ms)
-#define RELAY_TEST_GAP_MS  60   // szünet két relé között (ms)
+#define RELAY_TEST_ON_MS 200   // egy relé bekapcsolva-tartása (ms)
+#define RELAY_TEST_GAP_MS 200  // szünet két relé között (ms)
 
 // Ventilátorvezérlő debug: _P/_V = print (literál/érték), sima/_VLN = println (literál/érték)
 #if DEBUG
@@ -63,26 +63,26 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.14.0"
-#define FIRMWARE_DATE "2026-06-23"
+#define FIRMWARE_VERSION "7.14.6"
+#define FIRMWARE_DATE "2026-06-26"
 
-// ===================== PINS =====================      
+// ===================== PINS =====================
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
 #define RELAY_FAN1 23
 #define RELAY_FAN2 22
 #define RELAY_FAN3 21
-#define RELAY_MAIN 2   // roller + ventilátor táp
+#define RELAY_MAIN 2  // roller + ventilátor táp
 #define RELAY_EN 17
 #define BUTTON_PIN 1
 #define LED_YELLOW 0
 #define LED_RED 16
-#define RF_SWITCH_EN 3    // RF-kapcsoló engedélyezés (XIAO C6: WIFI_ENABLE), aktív LOW
-#define ANT_SELECT 14     // antenna választó (XIAO C6: WIFI_ANT_CONFIG): HIGH=külső, LOW=belső
+#define RF_SWITCH_EN 3  // RF-kapcsoló engedélyezés (XIAO C6: WIFI_ENABLE), aktív LOW
+#define ANT_SELECT 14   // antenna választó (XIAO C6: WIFI_ANT_CONFIG): HIGH=külső, LOW=belső
 #else
 #define RELAY_FAN1 10
 #define RELAY_FAN2 9
 #define RELAY_FAN3 8
-#define RELAY_MAIN 2   // roller + ventilátor táp
+#define RELAY_MAIN 2  // roller + ventilátor táp
 #define RELAY_EN 21
 #define BUTTON_PIN 3
 #define LED_YELLOW 5
@@ -92,34 +92,34 @@
 // FAN relé bontó-érintkező (NC) figyelés H11AA1M-mel: AC ⇒ LOW; az AC-t a LOW mintából detektáljuk
 #if FAN_SENSE_ENABLE
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
-#define FAN1_SENSE_PIN 19    // D? — Fan1 (RELAY_FAN1) bontó (NC) érintkezőjének figyelése
-#define FAN2_SENSE_PIN 20    // D? — Fan2 (RELAY_FAN2) bontó (NC) érintkezőjének figyelése
-#define FAN3_SENSE_PIN 18    // D? — Fan3 (RELAY_FAN3) bontó (NC) érintkezőjének figyelése
+#define FAN1_SENSE_PIN 19  // D? — Fan1 (RELAY_FAN1) bontó (NC) érintkezőjének figyelése
+#define FAN2_SENSE_PIN 20  // D? — Fan2 (RELAY_FAN2) bontó (NC) érintkezőjének figyelése
+#define FAN3_SENSE_PIN 18  // D? — Fan3 (RELAY_FAN3) bontó (NC) érintkezőjének figyelése
 #else
-#define FAN1_SENSE_PIN 6    // D4 — Fan1 (RELAY_FAN1) bontó (NC) érintkezőjének figyelése
-#define FAN2_SENSE_PIN 7    // D5 — Fan2 (RELAY_FAN2) bontó (NC) érintkezőjének figyelése
-#define FAN3_SENSE_PIN 20   // D7 — Fan3 (RELAY_FAN3) bontó (NC) érintkezőjének figyelése
+#define FAN1_SENSE_PIN 6   // D4 — Fan1 (RELAY_FAN1) bontó (NC) érintkezőjének figyelése
+#define FAN2_SENSE_PIN 7   // D5 — Fan2 (RELAY_FAN2) bontó (NC) érintkezőjének figyelése
+#define FAN3_SENSE_PIN 20  // D7 — Fan3 (RELAY_FAN3) bontó (NC) érintkezőjének figyelése
 #endif
 // AC jelentése a sense-ágon: 0=NC bekötés→AC⇒relé NINCS behúzva (jelen HW), 1=NO→AC⇒behúzva
 #define FAN_SENSE_AC_MEANS_ENGAGED 0
 
 const uint8_t fanSensePins[3] = { FAN1_SENSE_PIN, FAN2_SENSE_PIN, FAN3_SENSE_PIN };
 
-const unsigned long AC_SENSE_WINDOW_MS = 40;   // > 1 hálózati periódus (20 ms): a nullátmeneti HIGH-tüske ne látsszon "nincs AC"-nak
-const unsigned long AC_SENSE_DEBOUNCE_MS = 80;  // relé-kapcsolás/perdülés kiszűrése a fanRelayEngaged átbillenése előtt
-const unsigned long FAN_SENSE_GRACE_MS = 300;   // kapcsolás utáni türelmi idő (~2× a ~150 ms sense-beállásra)
-const unsigned long FAN_SENSE_MISMATCH_CONFIRM_MS = 300;   // NOAC megerősítés a grace UTÁN (a relé-átmenetet a grace fedi)
-#define FAN_SENSE_FAILSAFE_ON_STUCK 1   // STUCK → STATE_FAILSAFE (azonnal, türelmi idő után)
-#define FAN_SENSE_WARN_ON_NOAC      1   // NOAC  → figyelmeztetés + diag.log (failsafe NÉLKÜL)
+const unsigned long AC_SENSE_WINDOW_MS = 40;              // > 1 hálózati periódus (20 ms): a nullátmeneti HIGH-tüske ne látsszon "nincs AC"-nak
+const unsigned long AC_SENSE_DEBOUNCE_MS = 80;            // relé-kapcsolás/perdülés kiszűrése a fanRelayEngaged átbillenése előtt
+const unsigned long FAN_SENSE_GRACE_MS = 300;             // kapcsolás utáni türelmi idő (~2× a ~150 ms sense-beállásra)
+const unsigned long FAN_SENSE_MISMATCH_CONFIRM_MS = 300;  // NOAC megerősítés a grace UTÁN (a relé-átmenetet a grace fedi)
+#define FAN_SENSE_FAILSAFE_ON_STUCK 1                     // STUCK → STATE_FAILSAFE (azonnal, türelmi idő után)
+#define FAN_SENSE_WARN_ON_NOAC 1                          // NOAC  → figyelmeztetés + diag.log (failsafe NÉLKÜL)
 
-unsigned long fanSenseLastLow[3] = { 0, 0, 0 };       // utolsó LOW (AC-vezetés) minta ideje (ms)
-bool fanRelayEngaged[3] = { false, false, false };        // SZŰRT állapot: TRUE = az adott relé behúzva (NC nyitva, a fokozat aktív)
-unsigned long fanSenseChangeSince[3] = { 0, 0, 0 };   // mióta tér el a nyers a szűrttől (debounce)
-bool fanSenseSeen[3] = { false, false, false };       // láttunk-e már valaha LOW (AC) mintát
-unsigned long fanSenseGraceUntil = 0;                 // eddig nem értékelünk eltérést
-unsigned long fanMismatchSince[3] = { 0, 0, 0 };      // NOAC: mióta áll fenn az eltérés (0 = nincs)
-bool fanNoacWarned[3] = { false, false, false };      // NOAC: figyelmeztettünk-e már (ne spammeljen)
-#endif  // FAN_SENSE_ENABLE
+unsigned long fanSenseLastLow[3] = { 0, 0, 0 };      // utolsó LOW (AC-vezetés) minta ideje (ms)
+bool fanRelayEngaged[3] = { false, false, false };   // SZŰRT állapot: TRUE = az adott relé behúzva (NC nyitva, a fokozat aktív)
+unsigned long fanSenseChangeSince[3] = { 0, 0, 0 };  // mióta tér el a nyers a szűrttől (debounce)
+bool fanSenseSeen[3] = { false, false, false };      // láttunk-e már valaha LOW (AC) mintát
+unsigned long fanSenseGraceUntil = 0;                // eddig nem értékelünk eltérést
+unsigned long fanMismatchSince[3] = { 0, 0, 0 };     // NOAC: mióta áll fenn az eltérés (0 = nincs)
+bool fanNoacWarned[3] = { false, false, false };     // NOAC: figyelmeztettünk-e már (ne spammeljen)
+#endif                                               // FAN_SENSE_ENABLE
 
 // ===================== FS / OTA DEFINES =====================
 #define FLASH SPIFFS
@@ -134,10 +134,10 @@ static uint8_t* otaBuf = nullptr;
 
 // ===================== DIAG LOG (FIX-ESP-14) =====================
 #define DIAG_LOG_PATH "/diag.log"
-const size_t DIAG_LOG_MAX = 512;              // napló max. mérete: kicsi a SPIFFS-hely/kopás miatt (körkörös, [ver] sticky)
-const uint32_t LOW_HEAP_THRESHOLD = 20000;    // ~20 kB szabad heap alatt "kevés memória" bejegyzés (BLE/OTA tartalék)
-const size_t DIAG_CHUNK_SIZE = 20;            // = alap BLE MTU (23) − 3 ATT overhead → fragmentálás nélkül átmegy
-const unsigned long DIAG_CHUNK_INTERVAL = 25; // ms két csomag között (BLE flow control)
+const size_t DIAG_LOG_MAX = 512;               // napló max. mérete: kicsi a SPIFFS-hely/kopás miatt (körkörös, [ver] sticky)
+const uint32_t LOW_HEAP_THRESHOLD = 20000;     // ~20 kB szabad heap alatt "kevés memória" bejegyzés (BLE/OTA tartalék)
+const size_t DIAG_CHUNK_SIZE = 20;             // = alap BLE MTU (23) − 3 ATT overhead → fragmentálás nélkül átmegy
+const unsigned long DIAG_CHUNK_INTERVAL = 25;  // ms két csomag között (BLE flow control)
 
 #define OTA_SERVICE_UUID "fb1e4001-54ae-4a28-9f74-dfccb248601d"
 #define OTA_CHARACTERISTIC_UUID_RX "fb1e4002-54ae-4a28-9f74-dfccb248601d"
@@ -146,20 +146,20 @@ const unsigned long DIAG_CHUNK_INTERVAL = 25; // ms két csomag között (BLE fl
 static BLECharacteristic* pOtaTx = nullptr;
 static BLECharacteristic* pOtaRx = nullptr;
 
-static bool otaDeviceConnected = false;  // BLE OTA-kliens csatlakozva
-static bool otaSendSize = true;           // küldjük-e a flash-méretet a kliensnek
-static bool otaWriteFile = false;         // van-e CRC-OK, kiírásra váró part
-static int otaWriteLen = 0;            // [FIX-ESP-38] az aktuális part hossza (egy buffer)
-static int otaParts = 0, otaCur = 0, otaMTU = 0;  // összes part / aktuális part / part-méret
-static int otaMode = OTA_NORMAL_MODE;     // OTA állapotgép: NORMAL / UPDATE / INSTALL
-static bool otaCrcOk = true;              // CRC32 önteszt eredménye; FAIL esetén az OTA letiltva
+static bool otaDeviceConnected = false;                 // BLE OTA-kliens csatlakozva
+static bool otaSendSize = true;                         // küldjük-e a flash-méretet a kliensnek
+static bool otaWriteFile = false;                       // van-e CRC-OK, kiírásra váró part
+static int otaWriteLen = 0;                             // [FIX-ESP-38] az aktuális part hossza (egy buffer)
+static int otaParts = 0, otaCur = 0, otaMTU = 0;        // összes part / aktuális part / part-méret
+static int otaMode = OTA_NORMAL_MODE;                   // OTA állapotgép: NORMAL / UPDATE / INSTALL
+static bool otaCrcOk = true;                            // CRC32 önteszt eredménye; FAIL esetén az OTA letiltva
 unsigned long otaReceivedBytes = 0, otaTotalBytes = 0;  // eddig kiírt / várt összes byte
-unsigned long otaLedTimer = 0;            // OTA-villogás időzítő
-bool otaLedState = false;                 // OTA-villogás LED állapot
+unsigned long otaLedTimer = 0;                          // OTA-villogás időzítő
+bool otaLedState = false;                               // OTA-villogás LED állapot
 
-static uint32_t otaExpectedCrc = 0;    // a 0xFC-ben kapott elvárt CRC32
-static int otaPartRetry = 0;           // aktuális part újraküldés-számláló
-static const int MAX_PART_RETRY = 5;   // ennyi sikertelen CRC után abort
+static uint32_t otaExpectedCrc = 0;   // a 0xFC-ben kapott elvárt CRC32
+static int otaPartRetry = 0;          // aktuális part újraküldés-számláló
+static const int MAX_PART_RETRY = 5;  // ennyi sikertelen CRC után abort
 static int otaExpectedPart = 0;
 
 bool otaPendingReboot = false;
@@ -167,7 +167,7 @@ unsigned long otaRebootAt = 0;
 
 // [OTA health-check] true: frissen OTA-zott, még meg nem erősített (PENDING_VERIFY) firmware fut
 bool otaPendingVerify = false;
-const unsigned long OTA_VERIFY_HEALTHY_MS = 30000;   // OTA health-check: ennyi stabil futás után validál
+const unsigned long OTA_VERIFY_HEALTHY_MS = 30000;  // OTA health-check: ennyi stabil futás után validál
 
 bool otaInstallWaiting = false;
 unsigned long otaInstallWaitUntil = 0;
@@ -196,24 +196,24 @@ enum SystemState {
 SystemState currentState = STATE_NORMAL;  // fő állapotgép: NORMAL / FAILSAFE
 
 unsigned long lastCheck = 0;
-const unsigned long checkInterval = 20;    // állapotgép-lépés periódusa, ~50 Hz: gyors reakció, de kíméli a CPU-t/BLE-t
+const unsigned long checkInterval = 20;  // állapotgép-lépés periódusa, ~50 Hz: gyors reakció, de kíméli a CPU-t/BLE-t
 unsigned long lastBlink = 0;
-const unsigned long blinkInterval = 100;   // failsafe LED-villogás fél-periódus (~5 Hz, jól látható riasztás)
+const unsigned long blinkInterval = 100;  // failsafe LED-villogás fél-periódus (~5 Hz, jól látható riasztás)
 bool blinkState = false;
-unsigned long failStart = 0;               // failsafe belépés ideje (timeout-hoz)
+unsigned long failStart = 0;  // failsafe belépés ideje (timeout-hoz)
 bool failStartSet = false;
 
 volatile BleCommand bleCmd = { false, 0, false, 0 };
 portMUX_TYPE bleCmdMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ===================== TIMERS =====================
-const unsigned long INACTIVITY_MS = 3600000;     // 1 óra tétlenség → deep sleep (edzéshossz felső becslése)
-const unsigned long RELAY_SWITCH_DELAY_MS = 10;  // break-before-make szünet (tényleges ~20 ms a checkInterval miatt)
-const unsigned long LED_BLINK_INTERVAL = 500;    // normál státusz-LED villogás (~1 Hz)
-const unsigned long HEARTBEAT_INTERVAL = 2000;   // életjel-pulzus periódusa
-const unsigned long HEARTBEAT_PULSE = 100;       // életjel-pulzus hossza
-const unsigned long BLE_RESTART_DELAY = 500;     // BLE-stack stabilizálódása újraindítás előtt
-const unsigned long FAILSAFE_TIMEOUT_MS = 10000; // failsafe-ben ennyi LED-villogás után deep sleep (elég a hiba jelzésére)
+const unsigned long INACTIVITY_MS = 3600000;      // 1 óra tétlenség → deep sleep (edzéshossz felső becslése)
+const unsigned long RELAY_SWITCH_DELAY_MS = 10;   // break-before-make szünet (tényleges ~20 ms a checkInterval miatt)
+const unsigned long LED_BLINK_INTERVAL = 500;     // normál státusz-LED villogás (~1 Hz)
+const unsigned long HEARTBEAT_INTERVAL = 2000;    // életjel-pulzus periódusa
+const unsigned long HEARTBEAT_PULSE = 100;        // életjel-pulzus hossza
+const unsigned long BLE_RESTART_DELAY = 500;      // BLE-stack stabilizálódása újraindítás előtt
+const unsigned long FAILSAFE_TIMEOUT_MS = 10000;  // failsafe-ben ennyi LED-villogás után deep sleep (elég a hiba jelzésére)
 
 volatile bool zoneChanging = false;
 volatile unsigned long bleDisconnectTime = 0;
@@ -247,16 +247,16 @@ volatile unsigned long bleRestartTime = 0;
 OneButton button(BUTTON_PIN, true, true);
 
 // ===================== FAN / RELÉ / ZÓNA ÁLLAPOT =====================
-int currentZone = 0;                   // aktív ventilátor fokozat (0=ki, 1..3)
-int manualZoneIndex = 0;               // kézi módban a léptetett fokozat (dupla kattintás)
-bool manualMode = false;               // kézi (gombos) mód, BLE nélkül
-bool mainActive = false;               // RELAY_MAIN (roller + ventilátor táp) aktív
-bool relaysEnabled = false;            // tápengedély (RELAY_EN) be
-bool zoneChangeInProgress = false;     // folyamatban lévő break-before-make fokozatváltás
-unsigned long zoneChangeStart = 0;     // a váltás indításának ideje (ms)
-int pendingZone = 0;                   // a váltás célfokozata (handleZoneChange élesíti)
+int currentZone = 0;                // aktív ventilátor fokozat (0=ki, 1..3)
+int manualZoneIndex = 0;            // kézi módban a léptetett fokozat (dupla kattintás)
+bool manualMode = false;            // kézi (gombos) mód, BLE nélkül
+bool mainActive = false;            // RELAY_MAIN (roller + ventilátor táp) aktív
+bool relaysEnabled = false;         // tápengedély (RELAY_EN) be
+bool zoneChangeInProgress = false;  // folyamatban lévő break-before-make fokozatváltás
+unsigned long zoneChangeStart = 0;  // a váltás indításának ideje (ms)
+int pendingZone = 0;                // a váltás célfokozata (handleZoneChange élesíti)
 #if RELAY_TEST_AT_BOOT
-bool relayTestPending = false;          // relé-önteszt esedékes (loopban, BLE kapcsolat előtt)
+bool relayTestPending = false;  // relé-önteszt esedékes (loopban, BLE kapcsolat előtt)
 #endif
 
 // ===================== AKTIVITÁS / BOOT =====================
@@ -288,26 +288,30 @@ RTC_NOINIT_ATTR int savedZone;
 #define SAVED_ZONE_MAGIC 0xFA11A5EE
 
 RTC_NOINIT_ATTR uint32_t savedMainMagic;
-RTC_NOINIT_ATTR int savedMain;       // 1 = aktív volt, 0 = nem
+RTC_NOINIT_ATTR int savedMain;  // 1 = aktív volt, 0 = nem
 #define SAVED_MAIN_MAGIC 0xF0117E55
 
 // [FIX-ESP-39] Hibás-reset hurok-megszakító: gyors ismétlődő hibás resetnél a boot nem állít vissza → megszakad a brownout-hurok
 RTC_NOINIT_ATTR uint32_t errRestoreMagic;
-RTC_NOINIT_ATTR int errRestoreCount;       // egymást követő gyors hibás resetek száma (RTC)
+RTC_NOINIT_ATTR int errRestoreCount;  // egymást követő gyors hibás resetek száma (RTC)
 #define ERR_RESTORE_MAGIC 0x10075EED
-const int MAX_ERR_RESTORE = 3;                       // ennyiedik egymást követőnél már idle
-const unsigned long ERR_RESTORE_CLEAR_MS = 30000;    // ennyi stabil futás után nullázzuk
+const int MAX_ERR_RESTORE = 3;                     // ennyiedik egymást követőnél már idle
+const unsigned long ERR_RESTORE_CLEAR_MS = 30000;  // ennyi stabil futás után nullázzuk
 bool errRestoreCleared = false;
 bool restore_main = false;
 
 Preferences fanPrefs;
-int nvsLastSavedZone = -1;             // amit utoljára NVS-be írtunk (cache, hogy ne írjunk feleslegesen)
-int nvsLastSavedMain = -1;           // [FIX-ESP-30] görgő NVS cache (-1 = nincs mentve)
-unsigned long zoneStableSince = 0;     // mikortól stabil a jelenlegi fokozat
-bool nvsZonePending = false;           // van-e még nem mentett stabil fokozat
+int nvsLastSavedZone = -1;                       // amit utoljára NVS-be írtunk (cache, hogy ne írjunk feleslegesen)
+int nvsLastSavedMain = -1;                       // [FIX-ESP-30] görgő NVS cache (-1 = nincs mentve)
+unsigned long zoneStableSince = 0;               // mikortól stabil a jelenlegi fokozat
+bool nvsZonePending = false;                     // van-e még nem mentett stabil fokozat
 const unsigned long NVS_SAVE_STABLE_MS = 30000;  // 30 mp stabilitás után mentünk
-unsigned long lastNvsSaveTime = 0;     // mikor írtunk utoljára NVS-be
+unsigned long lastNvsSaveTime = 0;               // mikor írtunk utoljára NVS-be
 const unsigned long NVS_FORCE_SAVE_MS = 300000;  // 5 perc → kényszerített mentés
+
+// ===================== BYPASS MODE (5 short press) =====================
+bool relaySenseBypass = false;  // új üzemmód flag
+Preferences bypassPrefs;        // NVS tároló a bypass módhoz
 
 // ===================== COMMAND SOURCE PRIORITY =====================
 enum CommandSource {
@@ -354,6 +358,7 @@ void stateMachineStep();
 void normalMode();
 void saveZoneToNvsIfStable();  // [FIX-ESP-21]
 void zeroStateForFailsafe();   // [FIX-ESP-33] failsafe-állapot perzisztens nullázása
+void zeroStateForBypass();     // bypass módhoz
 #if FAN_SENSE_ENABLE
 void monitorFanRelays();       // [FIX-ESP-29] H11AA1M kimenet-mintavétel + szűrés
 void checkFanRelayMismatch();  // [FIX-ESP-29] elvárt vs. mért → failsafe
@@ -394,7 +399,10 @@ static void otaAbort(const String& msg) {
     delay(200);
   }
   if (FLASH.exists("/update.bin")) FLASH.remove("/update.bin");
-  if (otaBuf) { free(otaBuf); otaBuf = nullptr; }  // [FIX-ESP-38] buffer felszabadítása
+  if (otaBuf) {
+    free(otaBuf);
+    otaBuf = nullptr;
+  }  // [FIX-ESP-38] buffer felszabadítása
   otaMode = OTA_NORMAL_MODE;
   otaReceivedBytes = 0;
   otaTotalBytes = 0;
@@ -450,7 +458,10 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
     otaMTU = 0;
     otaWriteLen = 0;
     otaPartRetry = 0;
-    if (otaBuf) { free(otaBuf); otaBuf = nullptr; }  // [FIX-ESP-38]
+    if (otaBuf) {
+      free(otaBuf);
+      otaBuf = nullptr;
+    }  // [FIX-ESP-38]
 
     if (fs.exists(path)) {
       fs.remove(path);
@@ -497,12 +508,12 @@ void ota_boot_flow() {
 #if DEBUG
     const char* stName;
     switch (state) {
-      case ESP_OTA_IMG_NEW:            stName = "NEW"; break;
+      case ESP_OTA_IMG_NEW: stName = "NEW"; break;
       case ESP_OTA_IMG_PENDING_VERIFY: stName = "PENDING_VERIFY"; break;
-      case ESP_OTA_IMG_VALID:          stName = "VALID"; break;
-      case ESP_OTA_IMG_INVALID:        stName = "INVALID"; break;
-      case ESP_OTA_IMG_ABORTED:        stName = "ABORTED"; break;
-      default:                         stName = "UNDEFINED"; break;
+      case ESP_OTA_IMG_VALID: stName = "VALID"; break;
+      case ESP_OTA_IMG_INVALID: stName = "INVALID"; break;
+      case ESP_OTA_IMG_ABORTED: stName = "ABORTED"; break;
+      default: stName = "UNDEFINED"; break;
     }
     DBG_P("OTA image state: ");
     DBG_V(stName);
@@ -544,14 +555,20 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
 
   DBG("Running partition:");
-  DBG_P("  addr=0x"); DBG_VLN(running->address, HEX);
-  DBG_P(" size="); DBG_V(running->size);
-  DBG_P(" label="); DBG_VLN(running->label);
+  DBG_P("  addr=0x");
+  DBG_VLN(running->address, HEX);
+  DBG_P(" size=");
+  DBG_V(running->size);
+  DBG_P(" label=");
+  DBG_VLN(running->label);
 
   DBG("Next OTA partition:");
-  DBG_P("  addr=0x"); DBG_VLN(next->address, HEX);
-  DBG_P(" size="); DBG_V(next->size);
-  DBG_P(" label="); DBG_VLN(next->label);
+  DBG_P("  addr=0x");
+  DBG_VLN(next->address, HEX);
+  DBG_P(" size=");
+  DBG_V(next->size);
+  DBG_P(" label=");
+  DBG_VLN(next->label);
 #endif
 
   DBG_P("updateSize = ");
@@ -582,8 +599,10 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
   bool ok = Update.begin(updateSize);
   if (!ok) {
     DBG("Update.begin FAILED!");
-    DBG_P("Error code: "); DBG_VLN(Update.getError());
-    DBG_P("Error string: "); DBG_VLN(Update.errorString());
+    DBG_P("Error code: ");
+    DBG_VLN(Update.getError());
+    DBG_P("Error string: ");
+    DBG_VLN(Update.errorString());
 
     result += "Update.begin FAILED: ";
     result += Update.errorString();
@@ -604,8 +623,10 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
 
   if (written != updateSize) {
     DBG("WARNING: written != updateSize");
-    DBG_P("Expected: "); DBG_VLN(updateSize);
-    DBG_P("Got: "); DBG_VLN(written);
+    DBG_P("Expected: ");
+    DBG_VLN(updateSize);
+    DBG_P("Got: ");
+    DBG_VLN(written);
   }
 
   DBG("Calling Update.end()...");
@@ -616,8 +637,10 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
 
   if (!endOK) {
     DBG("Update.end FAILED");
-    DBG_P("Error code: "); DBG_VLN(Update.getError());
-    DBG_P("Error string: "); DBG_VLN(Update.errorString());
+    DBG_P("Error code: ");
+    DBG_VLN(Update.getError());
+    DBG_P("Error string: ");
+    DBG_VLN(Update.errorString());
 
     result += "Update.end FAILED: ";
     result += Update.errorString();
@@ -723,7 +746,10 @@ class MyServerCallbacks : public BLEServerCallbacks {
       otaCur = 0;
       otaMTU = 0;
       otaWriteLen = 0;
-      if (otaBuf) { free(otaBuf); otaBuf = nullptr; }  // [FIX-ESP-38]
+      if (otaBuf) {
+        free(otaBuf);
+        otaBuf = nullptr;
+      }  // [FIX-ESP-38]
       if (FLASH.exists("/update.bin")) {
         FLASH.remove("/update.bin");
         DBG("Incomplete update.bin removed");
@@ -907,8 +933,7 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
         }
       } else {
         otaWriteLen = (pData[1] * 256) + pData[2];
-        otaExpectedCrc = ((uint32_t)pData[5] << 24) | ((uint32_t)pData[6] << 16) |
-                         ((uint32_t)pData[7] << 8) | ((uint32_t)pData[8]);
+        otaExpectedCrc = ((uint32_t)pData[5] << 24) | ((uint32_t)pData[6] << 16) | ((uint32_t)pData[7] << 8) | ((uint32_t)pData[8]);
         otaCur = (pData[3] * 256) + pData[4];
         otaWriteFile = true;
       }
@@ -1036,7 +1061,8 @@ void handleMultiClick() {
   if (otaIsRunning()) return;
 
   int clicks = button.getNumberClicks();
-  if (clicks > 2) {
+
+  if (clicks == 3) {
     DBG("Multi-click → AUTO mode");
 
     manualMode = false;
@@ -1048,6 +1074,29 @@ void handleMultiClick() {
     BLEDevice::startAdvertising();
     DBG("Manual mode OFF, BLE advertising restarted");
     return;
+  }
+
+  if (clicks == 5) {
+    relaySenseBypass = !relaySenseBypass;
+    bypassPrefs.putBool("enabled", relaySenseBypass);
+
+    // 1 mp gyors váltakozó villogás (defenzív: 1ms delay + WDT reset, nem 60ms blokkolás)
+    unsigned long t0 = millis();
+    while (millis() - t0 < 1000) {
+      digitalWrite(LED_YELLOW, HIGH);
+      digitalWrite(LED_RED, LOW);
+      for (int i = 0; i < 60; i++) { delay(1); esp_task_wdt_reset(); }
+      digitalWrite(LED_YELLOW, LOW);
+      digitalWrite(LED_RED, HIGH);
+      for (int i = 0; i < 60; i++) { delay(1); esp_task_wdt_reset(); }
+    }
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_RED, LOW);
+
+    zeroStateForBypass();
+    disableRelays();  // [FIX-ESP-44] Defensive: ensure relays are OFF before restart
+
+    ESP.restart();
   }
 }
 
@@ -1079,21 +1128,24 @@ void otaInitService(BLEServer* server) {
 
 static const char* resetReasonStr(esp_reset_reason_t r) {
   switch (r) {
-    case ESP_RST_POWERON:  return "POWERON";
-    case ESP_RST_EXT:      return "EXT";
-    case ESP_RST_SW:       return "SW";
-    case ESP_RST_PANIC:    return "PANIC";
-    case ESP_RST_INT_WDT:  return "INT_WDT";
+    case ESP_RST_POWERON: return "POWERON";
+    case ESP_RST_EXT: return "EXT";
+    case ESP_RST_SW: return "SW";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "INT_WDT";
     case ESP_RST_TASK_WDT: return "TASK_WDT";
-    case ESP_RST_WDT:      return "WDT";
+    case ESP_RST_WDT: return "WDT";
     case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
     case ESP_RST_BROWNOUT: return "BROWNOUT";
-    case ESP_RST_SDIO:     return "SDIO";
-    default:               return "UNKNOWN";
+    case ESP_RST_SDIO: return "SDIO";
+    default: return "UNKNOWN";
   }
 }
 
 void diagLog(const char* line) {
+  // [FIX-ESP-42] Guard: avoid concurrent FILE_APPEND while diagStreaming holds FILE_READ on SPIFFS
+  if (diagStreaming) return;
+
   if (FLASH.exists(DIAG_LOG_PATH)) {
     File f = FLASH.open(DIAG_LOG_PATH, FILE_READ);
     if (f) {
@@ -1109,11 +1161,17 @@ void diagLog(const char* line) {
         f.close();
         int start = 0;
         for (int i = 0; i < n; i++) {
-          if (tmp[i] == '\n') { start = i + 1; break; }
+          if (tmp[i] == '\n') {
+            start = i + 1;
+            break;
+          }
         }
         File w = FLASH.open(DIAG_LOG_PATH, FILE_WRITE);  // FILE_WRITE = truncate
         if (w) {
-          if (hasVer) { w.print(verLine); w.print('\n'); }
+          if (hasVer) {
+            w.print(verLine);
+            w.print('\n');
+          }
           if (n > start) w.write(tmp + start, n - start);
           w.close();
         }
@@ -1188,8 +1246,7 @@ void printBootDiag() {
 #if BOOT_DIAG
   bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
   bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
-  bool mainRtcValid = (savedMainMagic == SAVED_MAIN_MAGIC &&
-                         (savedMain == 0 || savedMain == 1));
+  bool mainRtcValid = (savedMainMagic == SAVED_MAIN_MAGIC && (savedMain == 0 || savedMain == 1));
 
   Serial.println();
   Serial.println(F("===================================="));
@@ -1253,7 +1310,11 @@ void handleDiagRequest() {
     String ver = diagReadVersionLine();
     if (ver.length()) {
       File w = FLASH.open(DIAG_LOG_PATH, FILE_WRITE);  // truncate
-      if (w) { w.print(ver); w.print('\n'); w.close(); }
+      if (w) {
+        w.print(ver);
+        w.print('\n');
+        w.close();
+      }
     } else if (FLASH.exists(DIAG_LOG_PATH)) {
       FLASH.remove(DIAG_LOG_PATH);
     }
@@ -1266,7 +1327,7 @@ void handleDiagRequest() {
   if (diagRequested && !diagStreaming) {
     diagRequested = false;
     diagFile = FLASH.open(DIAG_LOG_PATH, FILE_READ);
-    static const uint8_t DIAG_BEGIN[] = { 0x02, 'D','I','A','G','_','B','E','G','I','N' };
+    static const uint8_t DIAG_BEGIN[] = { 0x02, 'D', 'I', 'A', 'G', '_', 'B', 'E', 'G', 'I', 'N' };
     pCharacteristic->setValue((uint8_t*)DIAG_BEGIN, sizeof(DIAG_BEGIN));
     pCharacteristic->notify();
     diagStreaming = true;
@@ -1288,7 +1349,7 @@ void handleDiagRequest() {
       }
     } else {
       if (diagFile) diagFile.close();
-      static const uint8_t DIAG_END[] = { 0x04, 'D','I','A','G','_','E','N','D' };
+      static const uint8_t DIAG_END[] = { 0x04, 'D', 'I', 'A', 'G', '_', 'E', 'N', 'D' };
       pCharacteristic->setValue((uint8_t*)DIAG_END, sizeof(DIAG_END));
       pCharacteristic->notify();
       diagStreaming = false;
@@ -1300,40 +1361,66 @@ void handleDiagRequest() {
 // ===================== SETUP =====================
 void setup() {
   // [FIX-ESP-39] Relék azonnali tiltása a setup() legelső lépéseként (Serial előtt) → legrövidebb boot-ablak: tápengedély LOW + minden relé OFF
-  pinMode(RELAY_EN, OUTPUT); digitalWrite(RELAY_EN, LOW);
-  pinMode(RELAY_FAN1, OUTPUT);   digitalWrite(RELAY_FAN1, HIGH);
-  pinMode(RELAY_FAN2, OUTPUT);   digitalWrite(RELAY_FAN2, HIGH);
-  pinMode(RELAY_FAN3, OUTPUT);   digitalWrite(RELAY_FAN3, HIGH);
-  pinMode(RELAY_MAIN, OUTPUT); digitalWrite(RELAY_MAIN, HIGH);
+  pinMode(RELAY_EN, OUTPUT);
+  digitalWrite(RELAY_EN, LOW);
+  pinMode(RELAY_FAN1, OUTPUT);
+  digitalWrite(RELAY_FAN1, HIGH);
+  pinMode(RELAY_FAN2, OUTPUT);
+  digitalWrite(RELAY_FAN2, HIGH);
+  pinMode(RELAY_FAN3, OUTPUT);
+  digitalWrite(RELAY_FAN3, HIGH);
+  pinMode(RELAY_MAIN, OUTPUT);
+  digitalWrite(RELAY_MAIN, HIGH);
   relaysEnabled = false;
-  
+
+  pinMode(LED_YELLOW, OUTPUT);
+  pinMode(LED_RED, OUTPUT);
+
 #if SERIAL_ENABLED
   Serial.begin(115200);
   delay(100);
 #endif
 
   DBG("GPIO + Serial init, Relays safe off done");
-  
+
+  bypassPrefs.begin("bypass", false);
+  relaySenseBypass = bypassPrefs.getBool("enabled", false);
+
+  if (relaySenseBypass) {
+    // 1 mp gyors váltakozó villogás (defenzív: 1ms delay + WDT reset, nem 60ms blokkolás)
+    unsigned long t0 = millis();
+    while (millis() - t0 < 1000) {
+      digitalWrite(LED_YELLOW, HIGH);
+      digitalWrite(LED_RED, LOW);
+      for (int i = 0; i < 60; i++) { delay(1); esp_task_wdt_reset(); }
+      digitalWrite(LED_YELLOW, LOW);
+      digitalWrite(LED_RED, HIGH);
+      for (int i = 0; i < 60; i++) { delay(1); esp_task_wdt_reset(); }
+    }
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_RED, LOW);
+  }
+
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
   // C6: külső antenna kiválasztása a BLE rádió indítása előtt (közös 2,4 GHz antenna-kapcsoló)
   pinMode(RF_SWITCH_EN, OUTPUT);
-  digitalWrite(RF_SWITCH_EN, LOW);         // RF switch control aktiválás
+  digitalWrite(RF_SWITCH_EN, LOW);  // RF switch control aktiválás
   delay(100);
   pinMode(ANT_SELECT, OUTPUT);
-  digitalWrite(ANT_SELECT, HIGH);          // külső antenna használata
+  digitalWrite(ANT_SELECT, HIGH);  // külső antenna használata
 #endif
-  
+
 #if FAN_SENSE_ENABLE
   pinMode(FAN1_SENSE_PIN, INPUT_PULLUP);
   pinMode(FAN2_SENSE_PIN, INPUT_PULLUP);
   pinMode(FAN3_SENSE_PIN, INPUT_PULLUP);
   fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;  // boot RC-beállás (a téves STUCK-ot a !mainActive kilépés fedi)
 #endif
-  
+
   DBG("LED boot state");
-  pinMode(LED_YELLOW, OUTPUT); digitalWrite(LED_YELLOW, HIGH);
-  pinMode(LED_RED, OUTPUT); digitalWrite(LED_RED, LOW);
-  
+  digitalWrite(LED_YELLOW, HIGH);
+  digitalWrite(LED_RED, LOW);
+
   ota_boot_flow();
 
   static_assert(sizeof(BLE_AUTH_PIN) > 1, "BLE_AUTH_PIN is empty!");
@@ -1391,7 +1478,7 @@ void setup() {
 
   // CRC32 önteszt ismert vektorral; FAIL → OTA letiltva + diag.log (release-ben is fut)
   {
-    const uint8_t tv[] = { '1','2','3','4','5','6','7','8','9' };
+    const uint8_t tv[] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
     uint32_t got = crc32_zlib(tv, 9);
     otaCrcOk = (got == 0xCBF43926);
     DBG_P("CRC32 self-test: 0x");
@@ -1413,9 +1500,7 @@ void setup() {
   // Validált bootnál rögzítjük a stabil verziót; PENDING_VERIFY-t a health-check intézi
   if (!otaPendingVerify) logStableVersion();
 
-  if (resetReason != ESP_RST_POWERON &&
-      resetReason != ESP_RST_DEEPSLEEP &&
-      resetReason != ESP_RST_SW) {
+  if (resetReason != ESP_RST_POWERON && resetReason != ESP_RST_DEEPSLEEP && resetReason != ESP_RST_SW) {
     char entry[80];
     snprintf(entry, sizeof(entry), "[boot] reason=%s(%d) heap=%u min=%u",
              resetReasonStr(resetReason), (int)resetReason,
@@ -1451,9 +1536,7 @@ void setup() {
 
 #if RELAY_TEST_AT_BOOT
   // Relé-önteszt csak SW-resetnél és gombébresztésnél (hiba-resetnél nem); a loopban fut, BLE kapcsolat előtt
-  relayTestPending = (resetReason == ESP_RST_SW) ||
-                     (resetReason == ESP_RST_DEEPSLEEP &&
-                      wakeup_reason == ESP_SLEEP_WAKEUP_GPIO);
+  relayTestPending = (resetReason == ESP_RST_SW) || (resetReason == ESP_RST_DEEPSLEEP && wakeup_reason == ESP_SLEEP_WAKEUP_GPIO);
 #endif
 
   DBG("Button init");
@@ -1470,19 +1553,14 @@ void setup() {
   nvsLastSavedMain = fanPrefs.getInt("main", -1);  // [FIX-ESP-30] görgő (-1 = nincs)
   fanPrefs.end();
 
-  if (lastBootResetReason == ESP_RST_BROWNOUT ||
-      lastBootResetReason == ESP_RST_UNKNOWN ||
-      lastBootResetReason == ESP_RST_INT_WDT ||
-      lastBootResetReason == ESP_RST_TASK_WDT ||
-      lastBootResetReason == ESP_RST_WDT) {
+  if (lastBootResetReason == ESP_RST_BROWNOUT || lastBootResetReason == ESP_RST_UNKNOWN || lastBootResetReason == ESP_RST_INT_WDT || lastBootResetReason == ESP_RST_TASK_WDT || lastBootResetReason == ESP_RST_WDT) {
 
-    bool mainRtcValid = (savedMainMagic == SAVED_MAIN_MAGIC &&
-                           (savedMain == 0 || savedMain == 1));
+    bool mainRtcValid = (savedMainMagic == SAVED_MAIN_MAGIC && (savedMain == 0 || savedMain == 1));
     bool mainNvsValid = (nvsLastSavedMain == 0 || nvsLastSavedMain == 1);
     int mainWas;
-    if (mainRtcValid)      mainWas = savedMain;          // RTC friss
-    else if (mainNvsValid) mainWas = nvsLastSavedMain;   // NVS fallback (brownout)
-    else                     mainWas = -1;                   // ismeretlen → nem indítunk
+    if (mainRtcValid) mainWas = savedMain;              // RTC friss
+    else if (mainNvsValid) mainWas = nvsLastSavedMain;  // NVS fallback (brownout)
+    else mainWas = -1;                                  // ismeretlen → nem indítunk
 
     // [FIX-ESP-39] Hurok-megszakító számláló (RTC). Érvénytelen magic → 0-ról indul.
     if (errRestoreMagic != ERR_RESTORE_MAGIC) {
@@ -1501,12 +1579,13 @@ void setup() {
       snprintf(e, sizeof(e), "[boot] loop-break idle n=%d", errRestoreCount);
       diagLog(e);
     } else {
-      restore_main= true;
+      restore_main = true;
       DBG("Boot after BROWNOUT/UNKNOWN/WDT, main was active → resuming");
-      enableRelays();
-      delay(100);
-      activateMain();
-
+      if (relaySenseBypass) {
+        enableRelays();
+        
+        activateMain();
+      }
       bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
       bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
       int restoreZone;
@@ -1523,11 +1602,12 @@ void setup() {
         restoreZone = 2;
         DBG("Both RTC and NVS invalid → defaulting to zone 2");
       }
-
-      setFanZone(restoreZone, SRC_BUTTON);
-      // [FIX-ESP-40] Fan-relé azonnali bekapcsolása bootkor: a setFanZone csak indítja a váltást, a handleZoneChange RELAY_SWITCH_DELAY_MS után hat → kivárjuk, majd hívjuk
-      delay(RELAY_SWITCH_DELAY_MS + 5);
-      handleZoneChange();
+      if (relaySenseBypass) {
+        setFanZone(restoreZone, SRC_BUTTON);
+        // [FIX-ESP-40] Fan-relé azonnali bekapcsolása bootkor: a setFanZone csak indítja a váltást, a handleZoneChange RELAY_SWITCH_DELAY_MS után hat → kivárjuk, majd hívjuk
+        delay(RELAY_SWITCH_DELAY_MS + 5);
+        handleZoneChange();
+      }
     }
   }
 
@@ -1560,7 +1640,7 @@ void setup() {
   lastHeartbeat = millis();
 
   printBootDiag();
-  
+
   DBG("Boot done");
   digitalWrite(LED_YELLOW, LOW);
 }
@@ -1571,9 +1651,11 @@ void loop() {
   unsigned long now2 = millis();
 
 #if RELAY_TEST_AT_BOOT
-  if (relayTestPending && !bleConnected) {  // egyszeri relé-önteszt, BLE kapcsolat előtt
-    relayTestPending = false;
-    relayBootTest();
+  if (!relaySenseBypass) {
+    if (relayTestPending && !bleConnected) {  // egyszeri relé-önteszt, BLE kapcsolat előtt
+      relayTestPending = false;
+      relayBootTest();
+    }
   }
 #endif
 
@@ -1603,7 +1685,9 @@ void loop() {
   }
 
 #if FAN_SENSE_ENABLE
-  if (!otaIsRunning()) monitorFanRelays();
+  if (!relaySenseBypass) {
+    if (!otaIsRunning()) monitorFanRelays();
+  }
 #endif
 
   otaLoop();
@@ -1778,8 +1862,10 @@ void normalMode() {
   }
 
 #if FAN_SENSE_ENABLE
-  checkFanRelayMismatch();
-  if (currentState == STATE_FAILSAFE) return;
+  if (!relaySenseBypass) {
+    checkFanRelayMismatch();
+    if (currentState == STATE_FAILSAFE) return;
+  }
 #endif
 
   yield();
@@ -1798,6 +1884,24 @@ void zeroStateForFailsafe() {
   portEXIT_CRITICAL(&zoneMux);
   mainActive = false;
   nvsZonePending = false;
+
+  if (!otaIsRunning() && (nvsLastSavedZone != 0 || nvsLastSavedMain != 0)) {
+    fanPrefs.begin("fan", false);
+    fanPrefs.putInt("zone", 0);
+    fanPrefs.putInt("main", 0);
+    fanPrefs.end();
+    nvsLastSavedZone = 0;
+    nvsLastSavedMain = 0;
+    lastNvsSaveTime = millis();
+  }
+}
+
+void zeroStateForBypass() {
+
+  savedZone = 0;
+  savedZoneMagic = SAVED_ZONE_MAGIC;
+  savedMain = 0;
+  savedMainMagic = SAVED_MAIN_MAGIC;
 
   if (!otaIsRunning() && (nvsLastSavedZone != 0 || nvsLastSavedMain != 0)) {
     fanPrefs.begin("fan", false);
@@ -2018,10 +2122,10 @@ void saveZoneToNvsIfStable() {
   int mainNow = mainActive ? 1 : 0;  // bool, atomi olvasás
 
   bool stableSave = nvsZonePending && (now - zoneStableSince >= NVS_SAVE_STABLE_MS);
-  bool forceSave  = (now - lastNvsSaveTime >= NVS_FORCE_SAVE_MS) && (z != nvsLastSavedZone);
+  bool forceSave = (now - lastNvsSaveTime >= NVS_FORCE_SAVE_MS) && (z != nvsLastSavedZone);
   if (stableSave) nvsZonePending = false;  // a stabil-pending elintézve, nem pörgünk rá
 
-  bool zoneNeedsWrite   = (stableSave || forceSave) && (z != nvsLastSavedZone);
+  bool zoneNeedsWrite = (stableSave || forceSave) && (z != nvsLastSavedZone);
   bool mainNeedsWrite = (mainNow != nvsLastSavedMain);
 
   if (!zoneNeedsWrite && !mainNeedsWrite) return;
@@ -2063,8 +2167,7 @@ void monitorFanRelays() {
       fanSenseLastLow[i] = now;
       fanSenseSeen[i] = true;
     }
-    bool acOnSense = fanSenseSeen[i] &&
-                     ((unsigned long)(now - fanSenseLastLow[i]) < AC_SENSE_WINDOW_MS);
+    bool acOnSense = fanSenseSeen[i] && ((unsigned long)(now - fanSenseLastLow[i]) < AC_SENSE_WINDOW_MS);
 
     // Bekötés-függő leképezés „relé behúzva"-ra (NC: AC ⇒ nincs behúzva; NO: AC ⇒ behúzva).
 #if FAN_SENSE_AC_MEANS_ENGAGED
@@ -2091,12 +2194,17 @@ void monitorFanRelays() {
 }
 
 void checkFanRelayMismatch() {
+
+  if (relaySenseBypass) return;  // teljes tiltás
   unsigned long now = millis();
 
   // RELAY_MAIN OFF → nincs táp/AC a fan-ágakon, a sense értelmezhetetlen
   // (AC_MEANS_ENGAGED=0-nál minden "behúzva"-nak látszik → téves STUCK). Ne értékeljünk.
   if (!mainActive) {
-    for (int i = 0; i < 3; i++) { fanMismatchSince[i] = 0; fanNoacWarned[i] = false; }
+    for (int i = 0; i < 3; i++) {
+      fanMismatchSince[i] = 0;
+      fanNoacWarned[i] = false;
+    }
     return;
   }
 
@@ -2104,10 +2212,10 @@ void checkFanRelayMismatch() {
 
   for (int i = 0; i < 3; i++) {
     bool expectedEngaged = relaysEnabled && (currentZone == (i + 1));
-    bool engaged = fanRelayEngaged[i];          // TRUE = a relé behúzva (NC-érzékelés)
+    bool engaged = fanRelayEngaged[i];  // TRUE = a relé behúzva (NC-érzékelés)
 
-    bool stuck = (!expectedEngaged && engaged);   // a zóna OFF-ot vár, de a relé BEHÚZVA (NC nyitva) → beragadt relé
-    bool noac  = (expectedEngaged && !engaged);   // a zóna ON-t vár, de a relé NINCS behúzva → relé/biztosíték/hálózat hiba
+    bool stuck = (!expectedEngaged && engaged);  // a zóna OFF-ot vár, de a relé BEHÚZVA (NC nyitva) → beragadt relé
+    bool noac = (expectedEngaged && !engaged);   // a zóna ON-t vár, de a relé NINCS behúzva → relé/biztosíték/hálózat hiba
 
 #if FAN_SENSE_FAILSAFE_ON_STUCK
     if (stuck && !inGrace) {
@@ -2125,8 +2233,7 @@ void checkFanRelayMismatch() {
 #if FAN_SENSE_WARN_ON_NOAC
     if (noac && !inGrace) {
       if (fanMismatchSince[i] == 0) fanMismatchSince[i] = now;
-      if (!fanNoacWarned[i] &&
-          (unsigned long)(now - fanMismatchSince[i]) >= FAN_SENSE_MISMATCH_CONFIRM_MS) {
+      if (!fanNoacWarned[i] && (unsigned long)(now - fanMismatchSince[i]) >= FAN_SENSE_MISMATCH_CONFIRM_MS) {
         DBG_P("FIGYELEM: Fan");
         DBG_V(i + 1);
         DBG(" zona ON, de a rele nincs behuzva (nincs NC-visszajelzes) - tovabb fut");
@@ -2217,16 +2324,22 @@ void disableRelays() {
 // ms ideig vár, közben AC-t mintázik (LOW = opto vezet). onFan = épp bekapcsolt fan
 // indexe (-1 = egyik sem). MAIN OFF mellett bármilyen AC → beragadt MAIN; hogy melyik
 // vonalon, azt a bekötés (FAN_SENSE_AC_MEANS_ENGAGED) dönti el.
-static void relayTestWait(unsigned long ms, int onFan, int* acHits) {
+static void relayTestWait(unsigned long ms, int onFan, int* acHits, int* totalSamples) {
   unsigned long t0 = millis();
   while ((millis() - t0) < ms) {
 #if FAN_SENSE_AC_MEANS_ENGAGED
     // NO-bekötés: AC az ÉPP BEKAPCSOLT fan make-érintkezőjén → MAIN beragadt
-    if (onFan >= 0 && digitalRead(fanSensePins[onFan]) == LOW) (*acHits)++;
+    if (onFan >= 0) {
+      (*totalSamples)++;
+      if (digitalRead(fanSensePins[onFan]) == LOW) (*acHits)++;
+    }
 #else
     // NC-bekötés (bontó): AC bármely ÉPP KIKAPCSOLT fan bontó-érintkezőjén → MAIN beragadt
     for (int i = 0; i < 3; i++) {
-      if (i != onFan && digitalRead(fanSensePins[i]) == LOW) (*acHits)++;
+      if (i != onFan) {
+        (*totalSamples)++;
+        if (digitalRead(fanSensePins[i]) == LOW) (*acHits)++;
+      }
     }
 #endif
     delayMicroseconds(500);
@@ -2248,7 +2361,8 @@ void relayBootTest() {
   delay(10);
 
 #if FAN_SENSE_ENABLE
-  int acHits = 0;   // bontón mért AC-minták; MAIN OFF mellett bármennyi → beragadt MAIN
+  int acHits = 0;        // bontón mért AC-minták; MAIN OFF mellett bármilyen → beragadt MAIN
+  int totalSamples = 0;  // [FIX-ESP-43] összes mintavétel (arányos küszöbhöz)
 #endif
 
   const uint8_t fans[3] = { RELAY_FAN1, RELAY_FAN2, RELAY_FAN3 };
@@ -2258,16 +2372,18 @@ void relayBootTest() {
     digitalWrite(RELAY_FAN1, HIGH);
     digitalWrite(RELAY_FAN2, HIGH);
     digitalWrite(RELAY_FAN3, HIGH);
-    DBG_P("Relay test FAN"); DBG_V(i + 1); DBG(" ON");
-    digitalWrite(fans[i], LOW);    // csak ez az egy ON
+    DBG_P("Relay test FAN");
+    DBG_V(i + 1);
+    DBG(" ON");
+    digitalWrite(fans[i], LOW);  // csak ez az egy ON
 #if FAN_SENSE_ENABLE
-    relayTestWait(RELAY_TEST_ON_MS, i, &acHits);   // fan i bekapcsolva
+    relayTestWait(RELAY_TEST_ON_MS, i, &acHits, &totalSamples);  // fan i bekapcsolva
 #else
     delay(RELAY_TEST_ON_MS);
 #endif
-    digitalWrite(fans[i], HIGH);   // OFF
+    digitalWrite(fans[i], HIGH);  // OFF
 #if FAN_SENSE_ENABLE
-    relayTestWait(RELAY_TEST_GAP_MS, -1, &acHits); // mind kikapcsolva
+    relayTestWait(RELAY_TEST_GAP_MS, -1, &acHits, &totalSamples);  // mind kikapcsolva
 #else
     delay(RELAY_TEST_GAP_MS);
 #endif
@@ -2283,10 +2399,12 @@ void relayBootTest() {
   relaysEnabled = false;
 #if FAN_SENSE_ENABLE
   fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
-  if (acHits >= 10) {   // MAIN OFF mellett AC a bontón → MAIN relé beragadt
-    DBG("main_relay stuck");
-    diagLog("[relay] main stuck!");
-    zeroStateForFailsafe();          // beragadt MAIN → failsafe (mint a relé-mismatchnél)
+  if (totalSamples > 0 && acHits > totalSamples / 10) {  // [FIX-ESP-43] arányos küszöb: >10% hit → beragadt MAIN
+    char e[64];
+    snprintf(e, sizeof(e), "[relay] main stuck! hits=%d/%d", acHits, totalSamples);
+    DBG_VLN(e);
+    diagLog(e);
+    zeroStateForFailsafe();  // beragadt MAIN → failsafe (mint a relé-mismatchnél)
     currentState = STATE_FAILSAFE;
   }
 #endif
@@ -2375,28 +2493,28 @@ void enterDeepSleep(const char* reason) {
     DBG("BLE stop");
     if (bleConnected) {
       pServer->disconnect(0);
-      delay(500);   // [FIX-ESP-23] BLE stack teljes kimaradása
+      delay(500);  // [FIX-ESP-23] BLE stack teljes kimaradása
     }
     BLEDevice::stopAdvertising();
-    delay(300);     // [FIX-ESP-23] advertising shutdown
+    delay(300);  // [FIX-ESP-23] advertising shutdown
     bleConnected = false;
     bleEnabled = false;
   }
 
   DBG("Relays OFF before sleep");
   disableRelays();
-  delay(200);       // [FIX-ESP-23] GPIO settle time relé OFF után
+  delay(200);  // [FIX-ESP-23] GPIO settle time relé OFF után
 
   DBG("LEDs OFF");
   digitalWrite(LED_RED, LOW);
   digitalWrite(LED_YELLOW, LOW);
-  delay(200);       // [FIX-ESP-23] GPIO settle time LED OFF után
+  delay(200);  // [FIX-ESP-23] GPIO settle time LED OFF után
 
   DBG("Deep sleep on BTN");
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);  // korábbi wakeup sourceok törlése
   esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
 
-  delay(500);       // [FIX-ESP-23] ESP stabilizáció a deep sleep előtt
+  delay(500);  // [FIX-ESP-23] ESP stabilizáció a deep sleep előtt
 #if SERIAL_ENABLED
   Serial.flush();
 #endif
@@ -2448,9 +2566,12 @@ void otaLoop() {
     case OTA_UPDATE_MODE:
 
       if (otaWriteFile) {
-        if (!otaBuf) { otaWriteFile = false; break; }
+        if (!otaBuf) {
+          otaWriteFile = false;
+          break;
+        }
         uint8_t* buf = otaBuf;
-        int      blen = otaWriteLen;
+        int blen = otaWriteLen;
 
         uint32_t crc = crc32_zlib(buf, (size_t)blen);
 
@@ -2459,9 +2580,12 @@ void otaLoop() {
           otaPartRetry++;
           DBG_P("OTA CRC fail part=");
           DBG_V(otaCur);
-          DBG_P(" got=0x"); DBG_V(crc, HEX);
-          DBG_P(" exp=0x"); DBG_V(otaExpectedCrc, HEX);
-          DBG_P(" try="); DBG_VLN(otaPartRetry);
+          DBG_P(" got=0x");
+          DBG_V(crc, HEX);
+          DBG_P(" exp=0x");
+          DBG_V(otaExpectedCrc, HEX);
+          DBG_P(" try=");
+          DBG_VLN(otaPartRetry);
 
           if (otaPartRetry <= MAX_PART_RETRY) {
             char e[72];
@@ -2488,7 +2612,10 @@ void otaLoop() {
           pOtaTx->setValue(com, 3);
           pOtaTx->notify();
           delay(50);
-          if (otaBuf) { free(otaBuf); otaBuf = nullptr; }
+          if (otaBuf) {
+            free(otaBuf);
+            otaBuf = nullptr;
+          }
           otaMode = OTA_INSTALL_MODE;
         } else {
           otaExpectedPart = otaCur + 1;  // [FIX-ESP-35] ezt várjuk vissza
@@ -2512,6 +2639,12 @@ void otaLoop() {
             otaReceivedBytes = 0;
             updateFromFS(FLASH);
             (void)savedTotal;  // ha esetleg debug-hoz kéne
+          } else {
+            // [FIX-ESP-41] size mismatch → abort instead of infinite retry loop
+            char msg[64];
+            snprintf(msg, sizeof(msg), "size mismatch exp=%u got=%u",
+                     (unsigned)otaTotalBytes, (unsigned)otaReceivedBytes);
+            otaAbort(msg);
           }
         }
         break;  // Várakozás alatt nem futtatjuk le az alábbi logikát
@@ -2528,8 +2661,11 @@ void otaLoop() {
         DBG_VLN(otaTotalBytes);
         DBG_P("Received: ");
         DBG_VLN(otaReceivedBytes);
-        otaInstallWaiting = true;
-        otaInstallWaitUntil = millis() + 2000;
+        // [FIX-ESP-41] Defensive: abort immediately on size mismatch instead of silent retry loop
+        char msg[64];
+        snprintf(msg, sizeof(msg), "size mismatch exp=%u got=%u",
+                 (unsigned)otaTotalBytes, (unsigned)otaReceivedBytes);
+        otaAbort(msg);
       }
       break;
   }
