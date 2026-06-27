@@ -200,7 +200,8 @@ A `OneButton` könyvtár kezeli a gombot:
 |---|---|
 | **Egyszeres kattintás** | Ha minden ki: relék + fő relé (görgő/táp) be. Ha aktív ventilátor fokozat: a ventilátor leáll (a fő relé bekapcsolva marad). Ha a fő relé jár és a fokozat 0: fő relé ki + relék ki. |
 | **Dupla kattintás** | **Kézi mód** be/léptetés. Belépéskor leállítja a BLE-t, és fokozatot léptet: 1 → 2 → 3 → 0 → 1 … (a fő relét feltételezi — előbb egy kattintás kapcsolja be). |
-| **Több (>2) kattintás** | Vissza **automata módba**: ventilátor ki, BLE advertising újraindul. |
+| **Három 3x kattintás** | Vissza **automata módba**: ventilátor ki, BLE advertising újraindul. |
+| **Öt 5x kattintás** | A reléfigyelés és boot teszt ki/be kapcsolása. Aktiválását a két led felváltva villogása jelzi, gomnyomáskor gyors boot után lassabb a villogás. NVS memória tárolja. |
 | **Hosszú nyomás (elengedésre)** | **Deep sleep** (`src=button-longpress`). |
 
 ### BLE vezérlés és parancsok
