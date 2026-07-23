@@ -40,7 +40,10 @@ def analyze_firmware(bin_path):
 
 def check_partition_table():
     """Check partition table against app partition size."""
-    PARTITION_FILE = "/home/user/FanController_OTA_debug/partitions_custom.csv"
+    # A partíciós tábla a szkript mellett van – ne beégetett abszolút útvonalon
+    PARTITION_FILE = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "partitions_custom.csv"
+    )
 
     if not os.path.exists(PARTITION_FILE):
         print(f"Partition file not found: {PARTITION_FILE}")

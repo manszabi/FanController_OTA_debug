@@ -111,3 +111,26 @@ kiemelve; az aktuális verziót a `FIRMWARE_VERSION` define tartalmazza.)
 - **[FIX-ESP-47]** 2026-06-23: **7.14.0** — **STUCK-detektálás gyorsítása**: `FAN_SENSE_GRACE_MS` 1500→**300 ms**. A sense-állapot ~150 ms alatt beáll (40 ms AC-ablak + 80 ms debounce + relé-mechanika), így a 300 ms (~2× tartalék) elég — a kapcsolás utáni beragadt relé detektálása ~1,5 s helyett ~0,3 s. A debounce/ablak/NOAC-confirm változatlan.
 - **[FIX-ESP-48]** 2026-06-23: **7.14.0** — **NOAC figyelmeztetés gyorsítása**: `FAN_SENSE_MISMATCH_CONFIRM_MS` 1000→**300 ms**. A megerősítés a kapcsolás utáni grace **után** számol (`!inGrace`), így a két relé közti break-before-make átmenetet a grace fedi — a confirm már csak a grace utáni, tényleges „nincs AC" debounce-a (tranziens hálózati zaj ellen). Egy valódi NOAC-hiba így ~grace+confirm = ~0,6 s alatt naplózódik (eddig ~1,3 s). Failsafe-mentes marad.
 - **[MOD-13]** 2026-06-23: **7.14.0** — **DEBUG=0 build tisztítása + komment-egységesítés.** A csak DBG-kiírásban használt, `DEBUG=0` mellett `-Wunused` figyelmeztetést adó változók rendezve (`TAG` törölve; `running`/`next`/`stName`/`fromZone` `#if DEBUG` blokkba) → `--warnings all` mellett mindkét cél (C3/C6) tiszta. A session során bevezetett kódrészek többsoros kommentjei tömör egysorosra húzva. `FIRMWARE_VERSION`→7.14.0 / `FIRMWARE_DATE`→2026-06-23.
+
+---
+
+## v7.14.7 — Átvilágítás: wrap-safe időzítés + apró tisztítás (2026-07-23)
+
+*(Megjegyzés: a 7.14.1–7.14.6 közti lépések változásai külön nem lettek naplózva —
+egyetlen összevont "Update FanController_OTA_debug.ino" commitban érkeztek.)*
+
+- **[FIX-ESP-49]** 2026-07-23: **7.14.7** — **`handleZoneChange` millis()-túlcsordulás.**
+  A `now >= start` külső feltétel pont a moduláris (wrap-safe) kivonás védelmét
+  iktatta ki: `millis()` túlcsordulásakor (~49,7 naponta) a 10 ms-os
+  break-before-make védőidő egyszer kimaradhatott volna. Javítás: egyetlen
+  szabványos `(unsigned long)(now - start) < RELAY_SWITCH_DELAY_MS` ellenőrzés —
+  normál működésben bitre azonos, túlcsorduláskor is helyes.
+- **[MOD-14]** 2026-07-23: **7.14.7** — **Halott `currentMillis` globális törölve.**
+  A globálist csak írta a kód (`normalMode`), olvasni soha nem olvasta (a
+  `handleLEDs` paramétere árnyékolta) — eltávolítva.
+- **[MOD-15]** 2026-07-23: **7.14.7** — **`rebootEspWithReason` kiírja az okot.**
+  A `reason` paraméter eddig nem jelent meg a debug-kimenetben (release buildben
+  továbbra is no-op).
+- **[MOD-16]** 2026-07-23: **7.14.7** — **`ota_diagnostic.py` hordozhatóság.**
+  A partíciós tábla beégetett `/home/user/...` útvonala a szkript saját
+  könyvtárára cserélve — bármely gépen működik.

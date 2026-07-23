@@ -3,7 +3,7 @@
 ESP32-C3/C6 alapú **háromfokozatú ventilátor- és görgővezérlő**, BLE-n keresztül
 irányítható, OTA firmware-frissítéssel, és beépített diagnosztikai naplóval.
 
-**Aktuális firmware verzió:** `7.14.0` (2026-06-23)
+**Aktuális firmware verzió:** `7.14.7` (2026-07-23)
 
 > **Fő relé (`RELAY_MAIN`):** ez a relé kapcsolja a **görgőt ÉS a ventilátor tápját**
 > együtt (egy edzéshez kell a görgő; görgő/táp nélkül a ventilátor haszontalan).

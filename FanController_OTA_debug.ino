@@ -63,8 +63,8 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.14.6"
-#define FIRMWARE_DATE "2026-06-26"
+#define FIRMWARE_VERSION "7.14.7"
+#define FIRMWARE_DATE "2026-07-23"
 
 // ===================== PINS =====================
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
@@ -217,7 +217,6 @@ const unsigned long FAILSAFE_TIMEOUT_MS = 10000;  // failsafe-ben ennyi LED-vill
 
 volatile bool zoneChanging = false;
 volatile unsigned long bleDisconnectTime = 0;
-unsigned long currentMillis = 0;
 const unsigned long BLE_ZONE_TIMEOUT_MS = 720000;  // BLE elszállás után 12 perccel mindent lekapcsol, ha zóna aktív (biztonsági)
 
 // ===================== FAN BLE UUIDs =====================
@@ -416,7 +415,8 @@ static void otaAbort(const String& msg) {
 }
 
 static void rebootEspWithReason(String reason) {
-  DBG("Rebooting...");
+  DBG_P("Rebooting: ");
+  DBG_VLN(reason);
   delay(1000);
   ESP.restart();
 }
@@ -1719,8 +1719,6 @@ void normalMode() {
   failStartSet = false;
   failStart = 0;
 
-  currentMillis = nowNormalMode;
-
   // Aktivitás: MAIN be ÉS megy a ventilátor — automatikus (BLE) módban BLE-kapcsolat is kell, manuál módban nem. A roller önmagában nem aktivitás.
   bool hasActivity =
     mainActive && ((bleConnected && currentZone != 0) || (manualMode && manualZoneIndex != 0));
@@ -2070,10 +2068,10 @@ void handleZoneChange() {
   localPendingZone = pendingZone;
   portEXIT_CRITICAL(&zoneMux);
 
-  if (nowhandleZoneChange >= localZoneChangeStart) {
-    if (nowhandleZoneChange - localZoneChangeStart < RELAY_SWITCH_DELAY_MS) {
-      return;
-    }
+  // Moduláris (wrap-safe) eltelt-idő: millis() túlcsordulásnál is pontos,
+  // a break-before-make védőidő sosem maradhat ki
+  if ((unsigned long)(nowhandleZoneChange - localZoneChangeStart) < RELAY_SWITCH_DELAY_MS) {
+    return;
   }
 
   portENTER_CRITICAL(&zoneMux);
