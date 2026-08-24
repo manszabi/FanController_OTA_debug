@@ -193,3 +193,73 @@ egyetlen összevont "Update FanController_OTA_debug.ino" commitban érkeztek.)*
   `asyncio.get_event_loop()` + `run_until_complete()` pár lecserélve
   `asyncio.run()`-ra (a többi szkripttel egységesen), `if __name__ == "__main__"`
   őrfeltétellel.
+
+---
+
+## v7.14.9 — Második átvilágítási kör: OTA-puffer határellenőrzés, wrap-safe határidők, allokáció-mentes forró utak (2026-08-24)
+
+- **[FIX-ESP-51]** 2026-08-24: **7.14.9** — **OTA heap-túlolvasás a `0xFC` hosszmezőjéből.**
+  A part-vége csomag 16 bites hosszmezője (`0..65535`) ellenőrzés nélkül került az
+  `otaWriteLen`-be, és ez vezérelte a `crc32_zlib(buf, blen)` **olvasását** és az
+  `otaWriteBinary(..., buf, blen)` **kiírását** a `OTA_BUF_SIZE` = **16 KB** pufferből.
+  Sérült hosszmező (BLE bithiba) vagy eltérő `PART`-méretű kliens esetén akár ~48 KB
+  **heap-túlolvasás** történhetett (idegen heap-tartalom a `update.bin`-be írva, illetve
+  potenciális összeomlás). Jellemző **inkonzisztencia**: a `0xFB` **író** ág már
+  határ-ellenőrzött volt (`if ((base + x) < (int)OTA_BUF_SIZE)`), az olvasást vezérlő
+  hosszmező viszont nem. Javítás: `wlen <= 0 || wlen > OTA_BUF_SIZE` → `otaAbort("bad part length")`.
+- **[FIX-ESP-52]** 2026-08-24: **7.14.9** — **`DIAGCLR` streamelés közben csonkolta a naplót.**
+  A `diagLog()` append-ágát a `[FIX-ESP-42]` guard védi (`if (diagStreaming) return;`),
+  a `handleDiagRequest()` **törlő** ága viszont **nem** volt védve: egy folyamatban lévő
+  `DIAG?` stream alatt érkező `DIAGCLR` `FILE_WRITE`-tal (truncate) írta felül, illetve
+  `FLASH.remove()`-val törölte a fájlt, **miközben a `diagFile` nyitott `FILE_READ`
+  handle-t tartott rá** — a stream ezután csonkolt/érvénytelen fájlból olvasott tovább.
+  (A `diag_client.py --clear` megvárja a `DIAG_END`-et, de bármely más kliens — mobil app,
+  `fan_stress.py` — interleavelheti a két parancsot.) Javítás: `if (diagClearRequested && !diagStreaming)`
+  — a kérés **függőben marad**, és a stream lezárása után a következő híváskor fut le.
+- **[FIX-ESP-53]** 2026-08-24: **7.14.9** — **További `millis()`-túlcsordulásra érzékeny határidők**
+  (a `[FIX-ESP-49]` által javított hibaosztály maradék előfordulásai — **inkonzisztencia**,
+  mert a `monitorFanRelays()` grace-e már a wrap-safe idiómát használta):
+  1. `otaLoop()` — `millis() >= otaRebootAt`: az OTA utáni **5 s**-os, eredményküldésre
+     hagyott várakozás a túlcsordulás körül kimaradt volna (azonnali reboot).
+  2. `otaLoop()` — `millis() >= otaInstallWaitUntil`: ugyanez a **2 s**-os telepítés előtti
+     várakozásra.
+  3. `setFanZone()` — `now >= sourceLockedUntil` / `now < sourceLockedUntil`: a **2 s**-os
+     BLE-vs-gomb forrás-prioritás zárolás a túlcsorduláskor korán lejárt, majd tévesen
+     újra aktívnak látszott volna.
+  Mindhárom a szabványos előjeles különbségre cserélve. A javítás **normál működésben
+  bitre azonos** — külön host-oldali teszttel ellenőrizve (a régi idióma a normál
+  tartományban 0 hibát ad, a wrap körül 2204-et; az új sehol nem hibázik).
+- **[MOD-23]** 2026-08-24: **7.14.9** — **OTA forró út: heap-allokáció csomagonként.**
+  Az `OtaCallbacks::onWrite()` a hosszt `pCharacteristic->getValue().length()`-ből vette;
+  a `getValue()` a BLE-könyvtárban **`String`-et ad vissza érték szerint**, azaz a teljes
+  csomagot **lemásolta a heapre** — csak azért, hogy a hossz megvan-e. Egy 1,1 MB-os
+  firmware ~**11 500** csomag → ugyanennyi felesleges `malloc`/`memcpy`/`free` a legidőkritikusabb
+  úton (heap-fragmentáció + CPU). A `getData()`/`getLength()` ugyanazt a `BLEValue`-puffert
+  éri el másolás nélkül (a könyvtár forrásában ellenőrizve). `int`-ként tartva, mert a
+  lenti `len - 2` **előjeles** kell legyen (1 bájtos csomagnál `size_t` alulcsordulna).
+- **[MOD-24]** 2026-08-24: **7.14.9** — **BLE-parancsok: `String` allokáció parancsonként.**
+  Mind az **5** parancságban (`AUTH:`/`LEVEL:`/`ROLLER:`/`DIAG?`/`DIAGCLR`) egy
+  `String correctPin = BLE_AUTH_PIN;` heap-allokáció született, pusztán a
+  `correctPin.length() > 0` **fordítási időben eldönthető** feltételhez; az `AUTH:` ág
+  ráadásul egy `val.substring(5)` allokációval is indult. Helyette `static constexpr bool
+  BLE_AUTH_REQUIRED = (sizeof(BLE_AUTH_PIN) > 1)` és `strcmp(val.c_str() + 5, BLE_AUTH_PIN)`
+  — allokáció-mentes, viselkedésben azonos (host-oldali teszttel 10 határesetre ellenőrizve:
+  üres/rövid/hosszú/whitespace-es PIN — 0 eltérés). Egyúttal törölve a **halott**
+  `#if !defined(BLE_AUTH_PIN)` őr: a makró egy sorral fentebb mindig definiált, így
+  sosem sülhetett el — az ÜRES PIN-t akarta elkapni, amit valójában a `setup()`
+  `static_assert`-je ellenőriz.
+- **[MOD-25]** 2026-08-24: **7.14.9** — **`String` paraméterek érték szerint.**
+  `rebootEspWithReason(String)` → `const char*`, `sendOtaResult(String)` → `const String&`
+  (hívásonkénti felesleges `String`-másolat megszüntetése).
+- **[MOD-26]** 2026-08-24: **7.14.9** — **Halott kód.** A `lastPrint1`/`lastPrint2`/`lastPrint3`
+  globálisok csak deklarálva voltak, sehol nem használva (a státusz-kiírás `static Timer`-t
+  használ) — törölve. A `#include "esp_log.h"` egyetlen szimbóluma sem szerepelt a
+  kódban — törölve (az `esp_system.h` marad: az `esp_reset_reason()` onnan jön).
+- **[MOD-27]** 2026-08-24: **7.14.9** — **`otaSendSize` nem állt vissza bontáskor.**
+  A flash-méret csomagot kapcsolatonként egyszer küldjük, de a flag a `onDisconnect`
+  OTA-állapot-reset blokkjából kimaradt (miközben az összes többi OTA-flag nullázódik),
+  így egy **második** OTA-kliens már nem kapta meg. A jelenlegi `sender/ota.py` nem
+  használja, de a protokoll-állapot így konzisztens.
+
+*Ellenőrzés: mindkét cél (XIAO ESP32-C3 és C6) `--warnings all` mellett hiba- és
+figyelmeztetés-mentesen fordul. Flash C3: 1 146 468 → 1 145 894 bájt (−574).*
