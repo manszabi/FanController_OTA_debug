@@ -5,7 +5,6 @@ Analyzes firmware.bin files and checks compatibility with partition tables.
 """
 
 import sys
-import struct
 import os
 
 def analyze_firmware(bin_path):
@@ -19,7 +18,11 @@ def analyze_firmware(bin_path):
         print(f"Firmware file: {bin_path}")
         print(f"File size: {size} bytes (0x{size:X})")
 
-        # Read magic number (first 4 bytes should be 0xE9 for ESP32)
+        if size == 0:
+            print("✗ A fájl üres (0 byte) — nincs mit ellenőrizni.")
+            return False
+
+        # Read magic number (first byte should be 0xE9 for an ESP32 app image)
         with open(bin_path, 'rb') as f:
             magic = f.read(1)
 
@@ -57,11 +60,11 @@ def check_partition_table():
                 continue
             parts = [p.strip() for p in line.split(',')]
             if len(parts) >= 5:
-                name, typ, subtype, offset, size = parts[0], parts[1], parts[2], parts[3], parts[4]
+                name, typ, offset, size = parts[0], parts[1], parts[3], parts[4]
                 if typ == 'app':
-                    offset_dec = int(offset, 16)
                     size_dec = int(size, 16)
-                    print(f"{name:8} @ 0x{offset} (0x{size} = {size_dec:,} bytes)")
+                    # offset/size already carry the "0x" prefix from the CSV (pl. "0x10000")
+                    print(f"{name:8} @ {offset} ({size} = {size_dec:,} bytes)")
 
 def main():
     print("=== FanController OTA Diagnostic ===\n")
