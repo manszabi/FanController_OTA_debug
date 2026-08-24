@@ -63,8 +63,8 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.14.7"
-#define FIRMWARE_DATE "2026-07-23"
+#define FIRMWARE_VERSION "7.14.8"
+#define FIRMWARE_DATE "2026-08-24"
 
 // ===================== PINS =====================
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
@@ -297,7 +297,6 @@ RTC_NOINIT_ATTR int errRestoreCount;  // egymást követő gyors hibás resetek 
 const int MAX_ERR_RESTORE = 3;                     // ennyiedik egymást követőnél már idle
 const unsigned long ERR_RESTORE_CLEAR_MS = 30000;  // ennyi stabil futás után nullázzuk
 bool errRestoreCleared = false;
-bool restore_main = false;
 
 Preferences fanPrefs;
 int nvsLastSavedZone = -1;                       // amit utoljára NVS-be írtunk (cache, hogy ne írjunk feleslegesen)
@@ -1002,6 +1001,21 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
+// Bypass-mód jelzés: 1 mp gyors váltakozó LED-villogás (defenzív: 1 ms delay + WDT reset, nem 60 ms blokkolás)
+static void bypassBlinkIndicator() {
+  unsigned long t0 = millis();
+  while (millis() - t0 < 1000) {
+    digitalWrite(LED_YELLOW, HIGH);
+    digitalWrite(LED_RED, LOW);
+    for (int i = 0; i < 60; i++) { delay(1); esp_task_wdt_reset(); }
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_RED, HIGH);
+    for (int i = 0; i < 60; i++) { delay(1); esp_task_wdt_reset(); }
+  }
+  digitalWrite(LED_YELLOW, LOW);
+  digitalWrite(LED_RED, LOW);
+}
+
 // ===================== BUTTON HANDLERS =====================
 void handleClick() {
   if (otaIsRunning()) return;
@@ -1080,18 +1094,7 @@ void handleMultiClick() {
     relaySenseBypass = !relaySenseBypass;
     bypassPrefs.putBool("enabled", relaySenseBypass);
 
-    // 1 mp gyors váltakozó villogás (defenzív: 1ms delay + WDT reset, nem 60ms blokkolás)
-    unsigned long t0 = millis();
-    while (millis() - t0 < 1000) {
-      digitalWrite(LED_YELLOW, HIGH);
-      digitalWrite(LED_RED, LOW);
-      for (int i = 0; i < 60; i++) { delay(1); esp_task_wdt_reset(); }
-      digitalWrite(LED_YELLOW, LOW);
-      digitalWrite(LED_RED, HIGH);
-      for (int i = 0; i < 60; i++) { delay(1); esp_task_wdt_reset(); }
-    }
-    digitalWrite(LED_YELLOW, LOW);
-    digitalWrite(LED_RED, LOW);
+    bypassBlinkIndicator();
 
     zeroStateForBypass();
     disableRelays();  // [FIX-ESP-44] Defensive: ensure relays are OFF before restart
@@ -1387,18 +1390,7 @@ void setup() {
   relaySenseBypass = bypassPrefs.getBool("enabled", false);
 
   if (relaySenseBypass) {
-    // 1 mp gyors váltakozó villogás (defenzív: 1ms delay + WDT reset, nem 60ms blokkolás)
-    unsigned long t0 = millis();
-    while (millis() - t0 < 1000) {
-      digitalWrite(LED_YELLOW, HIGH);
-      digitalWrite(LED_RED, LOW);
-      for (int i = 0; i < 60; i++) { delay(1); esp_task_wdt_reset(); }
-      digitalWrite(LED_YELLOW, LOW);
-      digitalWrite(LED_RED, HIGH);
-      for (int i = 0; i < 60; i++) { delay(1); esp_task_wdt_reset(); }
-    }
-    digitalWrite(LED_YELLOW, LOW);
-    digitalWrite(LED_RED, LOW);
+    bypassBlinkIndicator();
   }
 
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
@@ -1544,8 +1536,8 @@ void setup() {
   button.attachLongPressStop(handleLongPressStop);
   button.attachDoubleClick(handleDoubleClick);
   button.attachMultiClick(handleMultiClick);
-  button.setPressTicks(2000);
-  button.setClickTicks(400);
+  button.setPressMs(2000);
+  button.setClickMs(400);
 
   DBG("Relay state restore");
   fanPrefs.begin("fan", true);  // read-only
@@ -1579,13 +1571,9 @@ void setup() {
       snprintf(e, sizeof(e), "[boot] loop-break idle n=%d", errRestoreCount);
       diagLog(e);
     } else {
-      restore_main = true;
       DBG("Boot after BROWNOUT/UNKNOWN/WDT, main was active → resuming");
-      if (relaySenseBypass) {
-        enableRelays();
-        
-        activateMain();
-      }
+      enableRelays();
+      activateMain();
       bool rtcValid = (savedZoneMagic == SAVED_ZONE_MAGIC && savedZone >= 0 && savedZone <= 3);
       bool nvsValid = (nvsLastSavedZone >= 0 && nvsLastSavedZone <= 3);
       int restoreZone;
@@ -1602,12 +1590,10 @@ void setup() {
         restoreZone = 2;
         DBG("Both RTC and NVS invalid → defaulting to zone 2");
       }
-      if (relaySenseBypass) {
-        setFanZone(restoreZone, SRC_BUTTON);
-        // [FIX-ESP-40] Fan-relé azonnali bekapcsolása bootkor: a setFanZone csak indítja a váltást, a handleZoneChange RELAY_SWITCH_DELAY_MS után hat → kivárjuk, majd hívjuk
-        delay(RELAY_SWITCH_DELAY_MS + 5);
-        handleZoneChange();
-      }
+      setFanZone(restoreZone, SRC_BUTTON);
+      // [FIX-ESP-40] Fan-relé azonnali bekapcsolása bootkor: a setFanZone csak indítja a váltást, a handleZoneChange RELAY_SWITCH_DELAY_MS után hat → kivárjuk, majd hívjuk
+      delay(RELAY_SWITCH_DELAY_MS + 5);
+      handleZoneChange();
     }
   }
 

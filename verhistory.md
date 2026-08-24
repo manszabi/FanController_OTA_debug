@@ -134,3 +134,62 @@ egyetlen összevont "Update FanController_OTA_debug.ino" commitban érkeztek.)*
 - **[MOD-16]** 2026-07-23: **7.14.7** — **`ota_diagnostic.py` hordozhatóság.**
   A partíciós tábla beégetett `/home/user/...` útvonala a szkript saját
   könyvtárára cserélve — bármely gépen működik.
+
+---
+
+## v7.14.8 — Átvilágítás: boot-helyreállítási regresszió + Python segédeszközök (2026-08-24)
+
+- **[FIX-ESP-50]** 2026-08-24: **7.14.8** — **Kritikus regresszió: a hibás-reset utáni
+  boot-helyreállítás véletlenül az 5x-kattintás bypass-kapcsolóhoz lett kötve.**
+  Az „5 gombnyomás hozzáadása" commit (bypass mód, 2026-06-27) a `setup()`
+  BROWNOUT/UNKNOWN/WDT-ági fő relé + ventilátorfokozat visszaállítását
+  (`enableRelays()`/`activateMain()`/`setFanZone()`/`handleZoneChange()`)
+  tévedésből `if (relaySenseBypass)` alá tette. Mivel a bypass alapból **kikapcsolt**
+  (`false`), ez a **normál/gyári üzemmódban teljesen kiiktatta** a
+  FIX-ESP-19/25/30/39/40 óta meglévő boot-helyreállítást: hibás reset (brownout/
+  panic/WDT) után az eszköz `[boot] reason=...` bejegyzést írt, a hurok-megszakító
+  számlálót is növelte, de a relék/ventilátor **soha nem álltak vissza** — pontosan
+  az a „holtan marad" tünet, amit ezek a korábbi javítások megszüntettek. (A README
+  szerint az 5x-kattintás célja kizárólag „a reléfigyelés és boot teszt ki/be
+  kapcsolása" — a boot-helyreállításhoz semmi köze.) Javítás: a négy hívás feltétel
+  nélkülire állítva, a bypass csak azt szabályozza, aminek dokumentálva van
+  (`monitorFanRelays`/`checkFanRelayMismatch`/`relayBootTest`).
+- **[MOD-17]** 2026-08-24: **7.14.8** — **Halott `restore_main` globális törölve.**
+  A FIX-ESP-50 melletti hiba miatt bekerült változót csak írta a kód, olvasni
+  soha nem olvasta.
+- **[MOD-18]** 2026-08-24: **7.14.8** — **Bypass-jelző LED-villogás DRY.**
+  Az 5x-kattintás kezelőjében és a `setup()`-ban szó szerint duplikált, 12 soros
+  „1 mp gyors váltakozó villogás" blokk közös `bypassBlinkIndicator()` helperbe
+  emelve (kisebb flash, egyetlen hely a jövőbeli módosításhoz).
+- **[MOD-18b]** 2026-08-24: **7.14.8** — **OneButton API modernizálás.**
+  A `button.setPressTicks()`/`setClickTicks()` az OneButton 2.6.1-ben deprecated
+  (`--warnings all` mellett fordítási figyelmeztetést adott) — lecserélve a
+  jelenlegi `setPressMs()`/`setClickMs()` hívásokra (a viselkedés azonos, csak a
+  metódusnév változott). C3 és C6 célon is figyelmeztetés-mentesen fordul.
+- **[MOD-19]** 2026-08-24: **`fan_stress.py`** — **Python 3.8 kompatibilitás.**
+  A `find_address()` visszatérési típusa `str | None` (PEP 604) volt `from __future__
+  import annotations` nélkül — ez a `TOOLS_README.md` által ígért Python 3.8/3.9 alatt
+  `TypeError`-ral elszáll importáláskor (a `|` union-szintaxis csak 3.10-től
+  értékelhető ki futásidőben). Hozzáadva a `from __future__ import annotations`.
+- **[MOD-20]** 2026-08-24: **`serial_monitor.py`** — **Újracsatlakozási szál-szivárgás.**
+  A `read_loop()` a kapcsolat-vesztéskor a szálindító `connect()`-et hívta újra,
+  ami minden újracsatlakozáskor **egy újabb** `read_loop` szálat indított a már
+  futó mellé — ismétlődő/összefésült sorokhoz és szál-felhalmozódáshoz vezetve
+  hosszú, sok-újracsatlakozásos munkameneteknél. Javítás: a portnyitás
+  `_open_port()`-ba különítve; a `connect()` (első csatlakozás) indítja a
+  szálat, az újracsatlakozási ágak csak `_open_port()`-ot hívnak. Emellett a
+  RX/TX decode-fallback `errors='ignore'`-t használt, ami **soha nem dob
+  kivételt** → a hex-fallback ág holt kód volt (bináris/nem-UTF-8 adat
+  csendben, hibásan jelent volna meg szövegként); most szigorú UTF-8 dekódolás
+  + `UnicodeDecodeError`-ra tényleges hex-fallback.
+- **[MOD-21]** 2026-08-24: **`ota_diagnostic.py`** — kihasználatlan `import struct` és
+  `offset_dec`/`subtype` változók törölve; explicit, érthető hibaüzenet 0 byte-os
+  (üres) firmware-fájlra ahelyett, hogy az `IndexError` az általános except-ágba
+  esne. Emellett futtatással megerősített, valódi hiba: a partíciós tábla
+  kiírása duplán tette ki a `0x` prefixet (`"0x0x10000"`), mert a CSV `offset`/
+  `size` mezője már tartalmazza — a formázó string javítva, most helyesen
+  `0x10000`-et ír.
+- **[MOD-22]** 2026-08-24: **`sender/discover.py`** — az elavult
+  `asyncio.get_event_loop()` + `run_until_complete()` pár lecserélve
+  `asyncio.run()`-ra (a többi szkripttel egységesen), `if __name__ == "__main__"`
+  őrfeltétellel.
