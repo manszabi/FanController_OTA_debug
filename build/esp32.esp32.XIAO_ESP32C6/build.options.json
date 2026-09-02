@@ -1,0 +1,9 @@
+{
+  "additionalFiles": "../../..,../..,../..,../..,../../..,../..",
+  "compiler.optimization_flags": "-Os",
+  "customBuildProperties": "build.partitions=partitions_custom,upload.maximum_size=1376256,build.warn_data_percentage=75",
+  "fqbn": "esp32:esp32:XIAO_ESP32C6",
+  "hardwareFolders": "/root/.arduino15/packages",
+  "otherLibrariesFolders": "/root/Arduino/libraries",
+  "sketchLocation": "/home/user/FanController_OTA_debug"
+}

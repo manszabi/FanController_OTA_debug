@@ -19,7 +19,7 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 fi
 
 ARDUINO_CLI_VERSION="1.1.1"
-ESP32_CORE_VERSION="3.1.3"
+ESP32_CORE_VERSION="3.3.11"
 ONEBUTTON_VERSION="2.6.1"
 CTAGS_TAG="5.8-arduino11"
 DFU_VERSION="0.11.0-arduino5"
@@ -107,14 +107,26 @@ fi
 # --- 6) OneButton könyvtár (a library registry blokkolt -> GitHub) -------
 LIBDIR="$(arduino-cli config get directories.user 2>/dev/null)/libraries"
 LIBDIR="${LIBDIR:-$HOME/Arduino/libraries}"
-if [ ! -d "$LIBDIR/OneButton" ]; then
+if [ ! -f "$LIBDIR/OneButton/src/OneButton.h" ]; then
   echo "[hook]   OneButton ${ONEBUTTON_VERSION} telepítése..."
   mkdir -p "$LIBDIR"
-  curl -fsSL -o /tmp/onebutton.tar.gz \
-    "https://github.com/mathertel/OneButton/archive/refs/tags/${ONEBUTTON_VERSION}.tar.gz"
-  tar -xzf /tmp/onebutton.tar.gz -C /tmp
-  rm -rf "$LIBDIR/OneButton"
-  mv "/tmp/OneButton-${ONEBUTTON_VERSION}" "$LIBDIR/OneButton"
+  rm -rf "$LIBDIR/OneButton" /tmp/onebutton
+  # A /archive/refs/tags/ útvonalat a környezet hálózati szabálya 403-mal tiltja
+  # (csak a release-asset útvonalak engedettek), a git viszont a proxyn átmegy.
+  if git clone --quiet --depth 1 --branch "${ONEBUTTON_VERSION}" \
+       https://github.com/mathertel/OneButton.git /tmp/onebutton; then
+    mv /tmp/onebutton "$LIBDIR/OneButton"
+  else
+    # Tartalék: tarball (ha a git nem elérhető, de a letöltés engedett)
+    curl -fsSL -o /tmp/onebutton.tar.gz \
+      "https://github.com/mathertel/OneButton/archive/refs/tags/${ONEBUTTON_VERSION}.tar.gz" \
+      && tar -xzf /tmp/onebutton.tar.gz -C /tmp \
+      && mv "/tmp/OneButton-${ONEBUTTON_VERSION}" "$LIBDIR/OneButton"
+  fi
+  # A hook `set -e` nélkül fut, ezért a néma bukást külön jelezzük
+  if [ ! -f "$LIBDIR/OneButton/src/OneButton.h" ]; then
+    echo "[hook]   FIGYELEM: a OneButton telepítése NEM sikerült — a ./build.sh el fog bukni."
+  fi
 fi
 
 # --- 7) custom partíció elérhetővé tétele a core számára -----------------
