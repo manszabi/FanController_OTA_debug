@@ -403,3 +403,48 @@ könyvtár API-ja azonos, a viselkedése nem; az alábbi FIX-ESP-58/61 ebből fa
 figyelmeztetés-mentesen** fordul `esp32:esp32@3.3.11` alatt. Flash C3: 685 895 bájt
 (49%), C6: 787 826 bájt (57%).*
 
+---
+
+## v7.16.1 — TWDT-konfiguráció: néma bukás megszüntetése
+
+- **[FIX-ESP-63]** 2026-09-02: **7.16.1** — **A boot-kori watchdog-konfiguráció némán
+  elbukhatott.** A `setup()` eddig ellenőrzés nélküli `esp_task_wdt_deinit()` +
+  `esp_task_wdt_init(&wdt_config)` párral írta felül a TWDT-t. Amit az IDF 5.5
+  forrásából (`components/esp_system/task_wdt/task_wdt.c`) ellenőrizve tudni lehet:
+  - a `deinit()` leszedi a figyelt idle taskokat, de **`ESP_ERR_INVALID_STATE`-tel
+    bukik**, ha bármely task/user még feliratkozva van (`entries_slist` nem üres);
+  - az `init()` szintén **`ESP_ERR_INVALID_STATE`**-et ad, ha a TWDT már fut.
+
+  Vagyis ha a `deinit()` elbukik, az `init()` is elbukik, és **némán a gyári 5000 ms
+  marad** a szándékolt 15 000 ms helyett (a `.trigger_panic`/idle-maszk sem áll be) —
+  a kód pedig egyik visszatérési értéket sem nézte.
+
+  A **jelenlegi** core-beállítás mellett ez nem sül el: az `esp32:esp32@3.3.11`
+  sdkconfigjában `CONFIG_ESP_TASK_WDT_INIT=y` (5 s, panic), viszont
+  `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0` **nincs bekapcsolva**, és az Arduino
+  `main.cpp` a `loopTask`-ot sem iratkoztatja fel (`loopTaskWDTEnabled = false`) —
+  tehát a `setup()` idején nulla feliratkozó van, a `deinit()` átmegy. De ez a
+  **körülményektől** függ (core-verzió, sdkconfig, bármely korán induló könyvtár), nem
+  a kódtól — a néma 5 s-os visszaesés pedig pont a hosszan blokkoló szakaszokat
+  (relé-önteszt, bypass-villogás, alvás előtti csendesítés) érintené.
+
+  Javítás: a pontosan erre való **`esp_task_wdt_reconfigure()`** (IDF 5.3 óta létezik,
+  tehát a core 3.1.x-szel is fordul), ami a **futó** TWDT-t írja át — timeout, panic és
+  idle-maszk együtt, `deinit()` nélkül; `init()` már csak tartalék arra az esetre, ha a
+  TWDT nem futna (`CONFIG_ESP_TASK_WDT_INIT=n`). Mindkét hívás és az
+  `esp_task_wdt_add(NULL)` visszatérési értéke ellenőrzött, hiba esetén soros log **és**
+  `diag.log` bejegyzés (`[boot] TWDT config failed: …` / `… add failed: …`). Ugyanez a
+  védelem került a `performUpdate()` négy `esp_task_wdt_add(NULL)` visszairatkozására is:
+  ha ezek elbuknának, a loopTask a futás hátralévő részére **őrizetlenül** maradna.
+
+  > **Nyitott, szándékosan nem módosított megfigyelés:** a `wdt_config.idle_core_mask =
+  > (1 << 0)` a 0. mag idle taskját is figyelteti — ezt a firmware kapcsolja be (az
+  > Arduino alapbeállítás nem figyeli). Ennek két következménye van: (1) a
+  > `performUpdate()` `esp_task_wdt_delete(NULL)` hívása **nem teljes** védelem a hosszú
+  > flash-írásra, mert az idle task figyelt marad; (2) egy TWDT-panic `TASK_WDT` reset-okot
+  > ad, amit a boot-helyreállítás hibás resetnek tekint (visszakapcsolhatja a görgőt).
+  > A gyakorlatban a flash-műveletek engednek futni az idle tasknak, ezért maradt.
+
+*Ellenőrzés: mindkét cél `--warnings all` mellett hiba- és figyelmeztetés-mentesen fordul
+`esp32:esp32@3.3.11` alatt (C3 685 799 B / 49%, C6 787 842 B / 57%).*
+

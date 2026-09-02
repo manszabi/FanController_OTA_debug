@@ -68,7 +68,7 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.16.0"
+#define FIRMWARE_VERSION "7.16.1"
 #define FIRMWARE_DATE "2026-09-02"
 
 // ===================== PINS =====================
@@ -441,6 +441,16 @@ bool otaIsRunning() {
   return (otaMode != OTA_NORMAL_MODE);
 }
 
+// [FIX-ESP-63] TWDT-hívások néma bukásának kiszűrése: a hibát a soros logba ÉS a
+// diag.log-ba is kitesszük, hogy ne kelljen találgatni, ha a watchdog nem úgy viselkedik.
+static void wdtLogIfError(const char* what, esp_err_t rc) {
+  if (rc == ESP_OK) return;
+  char e[72];
+  snprintf(e, sizeof(e), "[boot] TWDT %.10s failed: %.30s", what, esp_err_to_name(rc));
+  DBG_VLN(e);
+  diagLog(e);
+}
+
 // ===================== OTA HELPERS =====================
 static uint32_t crc32_zlib(const uint8_t* p, size_t n) {
   uint32_t crc = 0xFFFFFFFF;
@@ -616,7 +626,7 @@ bool performUpdate(Stream& updateSource, size_t updateSize) {
   DBG("=== OTA DEBUG START ===");
 
   DBG("WDT delete (flash write may block)...");
-  esp_task_wdt_delete(NULL);
+  esp_task_wdt_delete(NULL);  // megj.: a 0. mag idle taskja figyelt MARAD (lásd wdt_config)
 
 #if DEBUG
   const esp_partition_t* running = esp_ota_get_running_partition();
@@ -658,7 +668,7 @@ bool performUpdate(Stream& updateSource, size_t updateSize) {
     result += ", nem app .bin)";
     DBG("=== OTA DEBUG END ===");
 
-    esp_task_wdt_add(NULL);
+    wdtLogIfError("re-add", esp_task_wdt_add(NULL));  // [FIX-ESP-63]
     sendOtaResult(result);
     return false;
   }
@@ -676,7 +686,7 @@ bool performUpdate(Stream& updateSource, size_t updateSize) {
     result += Update.errorString();
     DBG("=== OTA DEBUG END ===");
 
-    esp_task_wdt_add(NULL);
+    wdtLogIfError("re-add", esp_task_wdt_add(NULL));  // [FIX-ESP-63]
     sendOtaResult(result);
     return false;
   }
@@ -714,7 +724,7 @@ bool performUpdate(Stream& updateSource, size_t updateSize) {
     result += Update.errorString();
     DBG("=== OTA DEBUG END ===");
 
-    esp_task_wdt_add(NULL);
+    wdtLogIfError("re-add", esp_task_wdt_add(NULL));  // [FIX-ESP-63]
     sendOtaResult(result);
     return false;
   }
@@ -729,7 +739,7 @@ bool performUpdate(Stream& updateSource, size_t updateSize) {
   DBG("=== OTA DEBUG END ===");
 
   DBG("WDT add back");
-  esp_task_wdt_add(NULL);
+  wdtLogIfError("re-add", esp_task_wdt_add(NULL));  // [FIX-ESP-63]
 
   result += "Written: " + String(written) + "/" + String(updateSize) + "\n";
   result += "OTA done\n";
@@ -1538,15 +1548,29 @@ void setup() {
     }
   }
 
+  // [FIX-ESP-63] A TWDT-t az Arduino core MÁR elindította (`CONFIG_ESP_TASK_WDT_INIT=y`,
+  // 5000 ms, panic; idle-task figyelés nélkül). Eddig `deinit()+init()` párral írtuk felül,
+  // ellenőrzés nélkül. Ez némán elbukhat: a `deinit()` `ESP_ERR_INVALID_STATE`-et ad, ha
+  // bármely task/user fel van iratkozva a TWDT-re, és ilyenkor az `init()` is
+  // `ESP_ERR_INVALID_STATE` ("already initialized") — vagyis maradt volna a gyári **5 s**
+  // a szándékolt 15 s helyett, mindenféle jelzés nélkül. (A jelenlegi core-beállítás
+  // mellett a `deinit()` átmegy, mert boot után még senki nincs feliratkozva — de ez a
+  // körülményektől függ, nem a kódtól.) Helyette a pontosan erre való
+  // `esp_task_wdt_reconfigure()`: a FUTÓ TWDT-t írja át (timeout + panic + idle-maszk),
+  // deinit nélkül; `init()` csak tartalék, ha a TWDT nem futna. Mindkettő ellenőrizve.
+  // (Az `esp_task_wdt_reconfigure()` az IDF 5.3 óta létezik, tehát a core 3.1.x-szel is jó.)
   esp_task_wdt_config_t wdt_config = {
     .timeout_ms = 15000,
-    .idle_core_mask = (1 << 0),
+    .idle_core_mask = (1 << 0),  // a 0. mag idle taskja is figyelt (rajta kívül a loopTask)
     .trigger_panic = true
   };
 
-  esp_task_wdt_deinit();
-  esp_task_wdt_init(&wdt_config);
-  esp_task_wdt_add(NULL);
+  esp_err_t wdtRc = esp_task_wdt_reconfigure(&wdt_config);
+  if (wdtRc == ESP_ERR_INVALID_STATE) {  // a TWDT nem futott (CONFIG_ESP_TASK_WDT_INIT=n) → indítsuk
+    wdtRc = esp_task_wdt_init(&wdt_config);
+  }
+  wdtLogIfError("config", wdtRc);
+  wdtLogIfError("add", esp_task_wdt_add(NULL));
 
   esp_reset_reason_t resetReason = esp_reset_reason();
   lastBootResetReason = resetReason;  // [FIX-ESP-19] globális mentés
