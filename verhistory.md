@@ -263,3 +263,63 @@ egyetlen összevont "Update FanController_OTA_debug.ino" commitban érkeztek.)*
 
 *Ellenőrzés: mindkét cél (XIAO ESP32-C3 és C6) `--warnings all` mellett hiba- és
 figyelmeztetés-mentesen fordul. Flash C3: 1 146 468 → 1 145 894 bájt (−574).*
+
+---
+
+## v7.15.0 — Deep sleep alatt beragadó görgő-relé
+
+*Tünet: az ESP deep sleepbe megy, és a görgő reléje **meghúzva marad** (ehhez a
+tápengedélynek is aktívnak kell lennie); ébredéskor a bootkori relé-önteszt
+jogosan „beragadt fő relét" jelez → failsafe → az eszköz leáll.*
+
+- **[FIX-ESP-55]** 2026-09-02: **7.15.0** — **Kimenetek rögzítése (pad-hold) deep sleep alatt.**
+  Deep sleepben a digitális IO tápdomain lekapcsol: a GPIO-k **nagyimpedanciásra
+  (lebegőre)** váltanak, és az alvás **teljes ideje alatt** lebegve maradnak. A relé-
+  vezérlés aktív-LOW, a `RELAY_EN` tápengedély aktív-HIGH, így alvás alatt csak a panel
+  10 kΩ-os fel-/lehúzói védenek: egy kis szivárgó áram, kapacitív átkötés vagy zaj már
+  behúzhatja a görgő reléjét (`RELAY_MAIN`). Az ESP32 **pad-hold** latch-e viszont az
+  always-on tápdomainben van, ezért az elalvás pillanatában **aktívan hajtott** szintet
+  (`RELAY_EN`=LOW, minden relé=HIGH) alvás alatt is tartja. Az `enterDeepSleep()` és a
+  `setup()` mindkét korai alvás-ága (`POWERON` → alvás, illetve „gomb nélküli ébredés →
+  vissza aludni") most rögzíti az 5 relé-lábat (`relayPadsHoldEnable()`), a `setup()`
+  pedig — a lábak biztonságos szintre hajtása **után** — feloldja
+  (`relayPadsHoldRelease()`), így nincs átmeneti glitch.
+  - **C6:** van láb-szintű deep sleep hold, és a `RELAY_MAIN` (GPIO2) **RTC(LP)-láb** →
+    a hold a **bootloader alatt is él**, a `setup()` feloldása **kötelező** (enélkül a
+    görgő reléje soha többé nem lenne kapcsolható).
+  - **C3:** nincs láb-szintű deep sleep hold, ezért a láb-szintű `gpio_hold_en()` mellé
+    kell a globális `gpio_deep_sleep_hold_en()` is; ébredéskor magától felold.
+  - A `gpio_deep_sleep_hold_en()` **deklarációs feltétele core-verziónként eltér**
+    (IDF 5.3 / core 3.1.x: `SOC_GPIO_SUPPORT_HOLD_IO_IN_DSLP && !…SINGLE…`; IDF 5.5 /
+    core 3.3.x: csak `!…SINGLE…`, a `HOLD_IO_IN_DSLP` cap megszűnt). A firmware
+    **mindkettőt** lefedi egy származtatott makróval (`PAD_HOLD_NEEDS_GLOBAL_DSLP`),
+    különben az egyik core-on a hívás **némán kimaradna** — nem fordítási hibával,
+    hanem úgy, hogy a rögzítés C3-on nem lép életbe. Nem támogatott célnál `#error`.
+  - A hold csak a **kimenetet** rögzíti; a bemeneti út él, ezért a **gombos
+    GPIO-ébresztés** (a pad bemenetéről) változatlanul működik. Az ébresztő láb
+    `INPUT_PULLUP`-ja az `enterDeepSleep()`-ben is explicit (eddig csak a `setup()`
+    alvás-ágain volt az).
+  - `DEEP_SLEEP_PAD_HOLD` makróval kikapcsolható (alapból `1`).
+- **[FIX-ESP-56]** 2026-09-02: **7.15.0** — **A deep sleep nem törölte a „görgő aktív volt"
+  jelzést.** Az `enterDeepSleep()` csak `disableRelays()`-t hívott: az fizikailag
+  lekapcsol, de a `mainActive` / `savedMain=1` (RTC_NOINIT) és az NVS `fan/main=1`
+  **érintetlen maradt** (a `deactivateMain()`-t, ami ezeket nullázza, nem hívta senki).
+  Az RTC_NOINIT tartalma túléli az alvást **és** a resetek nagy részét, ezért egy alvás
+  közbeni/utáni **BROWNOUT / WDT / UNKNOWN** reset boot-helyreállítása (`[FIX-ESP-19]`,
+  `[FIX-ESP-22]`) ebből **magától újra bekapcsolta** a tápengedélyt és a görgőt —
+  miközben a felhasználó szerint az eszköz „alszik". Javítás:
+  - `enterDeepSleep()`: `deactivateMain()` (RTC-állapot 0) + `persistRelayStateOff()`
+    (NVS `main=0`, `zone=0`) a `disableRelays()` előtt.
+  - `setup()` `POWERON` ága (áramtalanítás után indulunk, gombra várunk): ugyanez a
+    nullázás alvás előtt — különben egy alvás közbeni brownout az **NVS-fallbackből**
+    indíthatta volna a görgőt.
+  - `disableRelays()` a `mainActive`-ot is törli (tápengedély nélkül a görgő-relé
+    fizikailag sem lehet behúzva).
+  - `rebootEspWithReason()` (OTA-reboot) a reset előtt biztonságos szintre hajtja a
+    reléket, hogy a reset alatti lebegő lábak ne kapcsolhassanak.
+  - Az NVS-nullázás három helyen bitre azonosan ismétlődött → közös
+    `persistRelayStateOff()` (`zeroStateForFailsafe`, `zeroStateForBypass`, alvás).
+
+*Ellenőrzés: mindkét cél (XIAO ESP32-C3 és C6) hibamentesen fordul `esp32:esp32@3.1.3`
+(CI-pin) és `@3.3.11` alatt is; a `PAD_HOLD_NEEDS_GLOBAL_DSLP` mindkét core-on a helyes
+ágat választja (C3 → 1, C6 → 0, `static_assert`-tel ellenőrizve).*

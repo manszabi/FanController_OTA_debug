@@ -7,6 +7,7 @@
 #include <OneButton.h>
 #include "esp_sleep.h"
 #include "esp_task_wdt.h"
+#include "driver/gpio.h"  // [FIX-ESP-55] pad-hold: kimenetek rögzítése deep sleep alatt
 #include <Update.h>
 #include "FS.h"
 #include "SPIFFS.h"
@@ -29,6 +30,10 @@
 
 // CRC-FAIL utáni frissen OTA-zott firmware: 0=fut tovább OTA nélkül, 1=rollback+reboot
 #define OTA_ROLLBACK_ON_CRC_FAIL 0
+
+// [FIX-ESP-55] Relé-kimenetek pad-hold-ja deep sleep alatt: 0=ki, 1=be
+// (alvás alatt a lábak különben nagyimpedanciásra váltanak — lásd a DEEP SLEEP PAD HOLD blokkot)
+#define DEEP_SLEEP_PAD_HOLD 1
 
 // Bootkori ventilátorrelé-önteszt (RELAY_MAIN nélkül): 0=ki, 1=be
 #define RELAY_TEST_AT_BOOT 1
@@ -62,8 +67,8 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.14.9"
-#define FIRMWARE_DATE "2026-08-24"
+#define FIRMWARE_VERSION "7.15.0"
+#define FIRMWARE_DATE "2026-09-02"
 
 // ===================== PINS =====================
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
@@ -356,6 +361,7 @@ void normalMode();
 void saveZoneToNvsIfStable();  // [FIX-ESP-21]
 void zeroStateForFailsafe();   // [FIX-ESP-33] failsafe-állapot perzisztens nullázása
 void zeroStateForBypass();     // bypass módhoz
+void persistRelayStateOff();   // [FIX-ESP-56] NVS: "görgő/fokozat volt-e aktív" nullázása
 #if FAN_SENSE_ENABLE
 void monitorFanRelays();       // [FIX-ESP-29] H11AA1M kimenet-mintavétel + szűrés
 void checkFanRelayMismatch();  // [FIX-ESP-29] elvárt vs. mért → failsafe
@@ -367,6 +373,69 @@ void otaLoop();
 void diagLog(const char* line);
 void handleDiagRequest();
 void printBootDiag();  // [FIX-ESP-28]
+// ===================== DEEP SLEEP PAD HOLD ([FIX-ESP-55]) =====================
+// Deep sleepben a digitális IO tápdomain lekapcsol: a GPIO-k nagyimpedanciásra
+// (lebegőre) váltanak, és az alvás TELJES ideje alatt lebegve maradnak. A relé-
+// vezérlés aktív-LOW, a tápengedély (RELAY_EN) aktív-HIGH, ezért lebegő lábon a
+// panel 10 kΩ-os fel-/lehúzói az egyetlen védelem: egy kis szivárgó áram, kapacitív
+// átkötés vagy zaj már behúzhatja a görgő reléjét (RELAY_MAIN). Ilyenkor az ESP
+// "alszik", a relé mégis meghúzva marad — ébredéskor pedig a bootteszt jogosan
+// beragadt MAIN-t jelez → failsafe → az ESP leáll.
+//
+// A pad-hold latch az always-on tápdomainben van, ezért az elalvás pillanatában
+// AKTÍVAN HAJTOTT szintet (RELAY_EN=LOW, minden relé=HIGH) az alvás alatt is tartja.
+//   * C6: van láb-szintű deep sleep hold (SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP),
+//     és a RELAY_MAIN (GPIO2) RTC(LP)-láb → a hold az ébredés UTÁN, a bootloader
+//     alatt is él, a setup() oldja fel (ezért kötelező a feloldás!).
+//   * C3: nincs láb-szintű deep sleep hold — az IDF doksi szerint a `gpio_hold_en()`
+//     digitális lábon alvás alatt NEM tart, ezért kell MELLÉ a globális
+//     `gpio_deep_sleep_hold_en()` is; ez ébredéskor magától felold.
+// A hold csak a KIMENETET rögzíti; a bemeneti út él, így a gombos GPIO-ébresztés
+// (RTC_CNTL_GPIO_WAKEUP_REG, a pad bemenetéről) változatlanul működik.
+#if DEEP_SLEEP_PAD_HOLD
+
+// Kell-e a globális deep sleep hold a láb-szintű mellé? A `gpio_deep_sleep_hold_en()`
+// DEKLARÁCIÓS feltétele core-verziónként eltér, ezért mindkettőt lefedjük:
+//   IDF 5.3 (core 3.1.x):  SOC_GPIO_SUPPORT_HOLD_IO_IN_DSLP && !SOC_..._SINGLE_...
+//   IDF 5.5 (core 3.3.x):  !SOC_..._SINGLE_...   (a HOLD_IO_IN_DSLP cap megszűnt)
+// Ha csak az egyiket néznénk, a másik core-on a hívás NÉMÁN kimaradna (C3-on a
+// rögzítés nem lépne életbe) vagy fordítási hibát adna.
+#if defined(SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP) && SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP
+#define PAD_HOLD_NEEDS_GLOBAL_DSLP 0  // C6: a láb-szintű hold alvás alatt is tart
+#elif !defined(SOC_GPIO_SUPPORT_HOLD_IO_IN_DSLP) || SOC_GPIO_SUPPORT_HOLD_IO_IN_DSLP
+#define PAD_HOLD_NEEDS_GLOBAL_DSLP 1  // C3: kell a globális deep sleep hold is
+#else
+#error "A cel chip nem tamogatja a deep sleep pad-holdot -> allitsd DEEP_SLEEP_PAD_HOLD 0-ra"
+#endif
+
+static const gpio_num_t HOLD_PINS[] = {
+  (gpio_num_t)RELAY_EN, (gpio_num_t)RELAY_MAIN,
+  (gpio_num_t)RELAY_FAN1, (gpio_num_t)RELAY_FAN2, (gpio_num_t)RELAY_FAN3
+};
+static const size_t HOLD_PIN_COUNT = sizeof(HOLD_PINS) / sizeof(HOLD_PINS[0]);
+
+// Elalvás ELŐTT, a lábak biztonságos szintre hajtása UTÁN hívandó.
+static void relayPadsHoldEnable() {
+  // Előbb láb-szinten (ezt kéri a globális API is: csak a már hold-olt lábakra hat)
+  for (size_t i = 0; i < HOLD_PIN_COUNT; i++) gpio_hold_en(HOLD_PINS[i]);
+#if PAD_HOLD_NEEDS_GLOBAL_DSLP
+  gpio_deep_sleep_hold_en();  // C3: a láb-szintű hold önmagában nem tart alvás alatt
+#endif
+}
+
+// Bootkor, a lábak biztonságos szintre hajtása UTÁN hívandó. C6-on ez oldja fel a
+// GPIO2 RTC-holdját — enélkül a görgő reléje soha többé nem lenne kapcsolható.
+static void relayPadsHoldRelease() {
+#if PAD_HOLD_NEEDS_GLOBAL_DSLP
+  gpio_deep_sleep_hold_dis();
+#endif
+  for (size_t i = 0; i < HOLD_PIN_COUNT; i++) gpio_hold_dis(HOLD_PINS[i]);
+}
+#else
+static void relayPadsHoldEnable() {}
+static void relayPadsHoldRelease() {}
+#endif  // DEEP_SLEEP_PAD_HOLD
+
 bool otaIsRunning() {
   return (otaMode != OTA_NORMAL_MODE);
 }
@@ -415,6 +484,7 @@ static void otaAbort(const String& msg) {
 static void rebootEspWithReason(const char* reason) {  // [MOD-25] volt: String érték szerint (másolat hívásonként)
   DBG_P("Rebooting: ");
   DBG_VLN(reason);
+  disableRelays();  // [FIX-ESP-56] a reset alatt lebegő lábak előtt hajtsuk biztonságos szintre a reléket
   delay(1000);
   ESP.restart();
 }
@@ -1394,6 +1464,10 @@ void setup() {
   pinMode(RELAY_MAIN, OUTPUT);
   digitalWrite(RELAY_MAIN, HIGH);
   relaysEnabled = false;
+  // [FIX-ESP-55] Az alvás előtt bekapcsolt pad-hold feloldása — CSAK most, hogy a
+  // lábak a hold alatt is a fenti biztonságos szinten legyenek (nincs átmeneti glitch).
+  // C6-on a RELAY_MAIN (GPIO2) RTC-holdja az ébredést is túléli, ezért kötelező.
+  relayPadsHoldRelease();
 
   pinMode(LED_YELLOW, OUTPUT);
   pinMode(LED_RED, OUTPUT);
@@ -1530,16 +1604,26 @@ void setup() {
       delay(100);
       pinMode(BUTTON_PIN, INPUT_PULLUP);
       esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
+      relayPadsHoldEnable();  // [FIX-ESP-55] relé-lábak rögzítése (ne lebegjenek alvás alatt)
       esp_deep_sleep_start();
     }
   } else if (resetReason == ESP_RST_POWERON) {
     DBG("Power-on → sleep (wait for button)");
+    // [FIX-ESP-56] Áramtalanítás utáni indulás = mindent OFF-ról kezdünk (gombra várunk).
+    // A perzisztens "görgő/fokozat aktív volt" jelzés törlése, különben egy alvás közbeni
+    // brownout boot-helyreállítása az NVS-ből visszakapcsolná a görgőt.
+    savedZone = 0;
+    savedZoneMagic = SAVED_ZONE_MAGIC;
+    savedMain = 0;
+    savedMainMagic = SAVED_MAIN_MAGIC;
+    persistRelayStateOff();
 #if SERIAL_ENABLED
     Serial.flush();
 #endif
     delay(100);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
     esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
+    relayPadsHoldEnable();  // [FIX-ESP-55] relé-lábak rögzítése (ne lebegjenek alvás alatt)
     esp_deep_sleep_start();
   } else {
     DBG("Fault/SW reset → resuming normal operation");
@@ -1874,6 +1958,21 @@ void normalMode() {
   yield();
 }
 
+// [FIX-ESP-56] A perzisztens "görgő/fokozat aktív volt" jelzés nullázása NVS-ben.
+// Ezt olvassa a boot-helyreállítás BROWNOUT/UNKNOWN/WDT reset után: ha 1 marad,
+// az eszköz magától visszakapcsolja a görgőt — akkor is, amikor épp aludnia kéne.
+void persistRelayStateOff() {
+  if (otaIsRunning()) return;
+  if (nvsLastSavedZone == 0 && nvsLastSavedMain == 0) return;
+  fanPrefs.begin("fan", false);
+  fanPrefs.putInt("zone", 0);
+  fanPrefs.putInt("main", 0);
+  fanPrefs.end();
+  nvsLastSavedZone = 0;
+  nvsLastSavedMain = 0;
+  lastNvsSaveTime = millis();
+}
+
 void zeroStateForFailsafe() {
   portENTER_CRITICAL(&zoneMux);
   currentZone = 0;
@@ -1888,15 +1987,7 @@ void zeroStateForFailsafe() {
   mainActive = false;
   nvsZonePending = false;
 
-  if (!otaIsRunning() && (nvsLastSavedZone != 0 || nvsLastSavedMain != 0)) {
-    fanPrefs.begin("fan", false);
-    fanPrefs.putInt("zone", 0);
-    fanPrefs.putInt("main", 0);
-    fanPrefs.end();
-    nvsLastSavedZone = 0;
-    nvsLastSavedMain = 0;
-    lastNvsSaveTime = millis();
-  }
+  persistRelayStateOff();
 }
 
 void zeroStateForBypass() {
@@ -1906,15 +1997,7 @@ void zeroStateForBypass() {
   savedMain = 0;
   savedMainMagic = SAVED_MAIN_MAGIC;
 
-  if (!otaIsRunning() && (nvsLastSavedZone != 0 || nvsLastSavedMain != 0)) {
-    fanPrefs.begin("fan", false);
-    fanPrefs.putInt("zone", 0);
-    fanPrefs.putInt("main", 0);
-    fanPrefs.end();
-    nvsLastSavedZone = 0;
-    nvsLastSavedMain = 0;
-    lastNvsSaveTime = millis();
-  }
+  persistRelayStateOff();
 }
 
 void failSafeMode() {
@@ -2320,6 +2403,7 @@ void disableRelays() {
   digitalWrite(RELAY_EN, LOW);
   delay(10);
   relaysEnabled = false;
+  mainActive = false;  // [FIX-ESP-56] tápengedély nélkül a görgő-relé fizikailag sem lehet behúzva
 #if FAN_SENSE_ENABLE
   fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
   fanMismatchSince[0] = fanMismatchSince[1] = fanMismatchSince[2] = 0;
@@ -2511,7 +2595,14 @@ void enterDeepSleep(const char* reason) {
   }
 
   DBG("Relays OFF before sleep");
-  disableRelays();
+  // [FIX-ESP-56] A deep sleep KONTROLLÁLT kikapcsolás: a görgőt/fokozatot nem csak
+  // fizikailag kell lekapcsolni, hanem a "volt-e aktív" jelzést is törölni kell
+  // (RTC_NOINIT + NVS). Enélkül a jelzés túléli az alvást, és egy későbbi
+  // BROWNOUT/WDT/UNKNOWN reset boot-helyreállítása visszakapcsolná a görgőt —
+  // az eszköz "alszik", a relé mégis meghúzva marad.
+  deactivateMain();         // RELAY_MAIN + fan-relék OFF, savedMain/savedZone = 0 (RTC)
+  persistRelayStateOff();   // NVS: main=0, zone=0
+  disableRelays();          // tápengedély LOW
   delay(200);  // [FIX-ESP-23] GPIO settle time relé OFF után
 
   DBG("LEDs OFF");
@@ -2521,7 +2612,12 @@ void enterDeepSleep(const char* reason) {
 
   DBG("Deep sleep on BTN");
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);  // korábbi wakeup sourceok törlése
+  pinMode(BUTTON_PIN, INPUT_PULLUP);                      // [FIX-ESP-55] definiált szint az ébresztő lábon (a pad-hold ezt is rögzíti)
   esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
+
+  // [FIX-ESP-55] Relé-lábak rögzítése: alvás alatt is HAJTOTT marad a
+  // RELAY_EN=LOW + minden relé HIGH (OFF) szint, nem lebeg.
+  relayPadsHoldEnable();
 
   delay(500);  // [FIX-ESP-23] ESP stabilizáció a deep sleep előtt
 #if SERIAL_ENABLED

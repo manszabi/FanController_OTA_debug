@@ -275,15 +275,49 @@ Az eszköz deep sleepbe lép:
 A `enterDeepSleep()` alvás előtt gondosan „lecsöndesíti" a rendszert, hogy
 elkerülje az INT_WDT(5) watchdog-resetet ébredéskor:
 
-1. BLE lecsatlakozás → **500 ms**
-2. advertising stop → **300 ms**
-3. relék ki → **200 ms** (GPIO settle)
+1. OTA health-check (ha `PENDING_VERIFY`): a firmware **VALID**-ra jelölése
+2. BLE lecsatlakozás → **500 ms**, advertising stop → **300 ms**
+3. **állapot-nullázás + relék ki** (`deactivateMain()` + `persistRelayStateOff()` +
+   `disableRelays()`) → **200 ms** (GPIO settle) — lásd alább
 4. LED-ek ki → **200 ms** (GPIO settle)
-5. **interrupt cleanup**: `portDISABLE_INTERRUPTS()` +
-   `esp_intr_disable_source(ETS_GPIO_INUM)` + `portENABLE_INTERRUPTS()` → **100 ms**
-6. korábbi wakeup-források törlése (`esp_sleep_disable_wakeup_source(ALL)`),
-   majd csak a gomb GPIO wakeup beállítása
+5. korábbi wakeup-források törlése (`esp_sleep_disable_wakeup_source(ALL)`),
+   a gomb lába `INPUT_PULLUP`-ra, majd a gomb GPIO wakeup beállítása
+6. **kimenetek rögzítése** (`relayPadsHoldEnable()`) — lásd alább
 7. **500 ms** végső stabilizáció → `esp_deep_sleep_start()`
+
+#### Kimenetek rögzítése alvás alatt (pad-hold, `[FIX-ESP-55]`)
+
+Deep sleepben a digitális IO tápdomain lekapcsol: a GPIO-k **nagyimpedanciásra
+(lebegőre)** váltanak, és az alvás **teljes ideje alatt** lebegve maradnak. A relé-
+vezérlés aktív-LOW, a tápengedély (`RELAY_EN`) aktív-HIGH, így lebegő lábon csak a
+panel 10 kΩ-os fel-/lehúzói védenek — egy kis szivárgó áram, kapacitív átkötés vagy
+zaj már **behúzhatja a görgő reléjét** (`RELAY_MAIN`). Tünet: az ESP „alszik", a
+**görgő reléje mégis meghúzva marad**, ébredéskor pedig a bootteszt jogosan
+beragadt fő relét jelez → failsafe → az eszköz leáll.
+
+Megoldás: az ESP32 **pad-hold** latch-e az always-on tápdomainben van, ezért az
+elalvás pillanatában **aktívan hajtott** szintet (`RELAY_EN`=LOW, minden relé=HIGH)
+alvás alatt is tartja. A firmware minden alvás előtt rögzíti az 5 relé-lábat, a
+`setup()` pedig — a biztonságos szintre hajtás **után** — feloldja
+(`DEEP_SLEEP_PAD_HOLD` makróval kikapcsolható).
+
+| Chip | Mechanizmus | Ébredés után |
+| --- | --- | --- |
+| **C6** | láb-szintű hold (`gpio_hold_en`); a `RELAY_MAIN` (GPIO2) **RTC(LP)-láb** | a hold a **bootloader alatt is él** → a `setup()` oldja fel (kötelező!) |
+| **C3** | láb-szintű hold **+** globális `gpio_deep_sleep_hold_en()` (a C3-on a láb-szintű hold alvás alatt önmagában nem tart) | ébredéskor magától felold, a `setup()` is felold |
+
+> A hold csak a **kimenetet** rögzíti — a bemeneti út él, ezért a **gombos
+> GPIO-ébresztés** (a pad bemenetéről, `RTC_CNTL_GPIO_WAKEUP_REG`) változatlanul
+> működik. A `gpio_deep_sleep_hold_en()` deklarációs feltétele core-verziónként
+> eltér (IDF 5.3 vs. 5.5), ezért a firmware mindkét változatot lefedi — így a
+> rögzítés `esp32:esp32@3.1.x` és `@3.3.x` alatt is életbe lép.
+
+#### Az alvás „kontrollált kikapcsolás" (`[FIX-ESP-56]`)
+
+A deep sleep nem csak fizikailag kapcsolja le a görgőt/fokozatot: törli a
+**„volt-e aktív"** jelzést is (`RTC_NOINIT` + NVS). Enélkül a jelzés túléli az
+alvást, és egy későbbi **BROWNOUT/WDT/UNKNOWN** reset boot-helyreállítása
+visszakapcsolná a görgőt — miközben az eszköz a felhasználó szerint „alszik".
 
 ---
 
@@ -367,6 +401,10 @@ Ha a fő relé **aktív volt**, a fokozat **RTC-elsőbbséggel** áll vissza (a 
 
 > **Szándékos** deep sleep utáni ébredésnél (reset ok = `DEEPSLEEP`) **nincs**
 > auto-visszaállítás — tiszta lappal indul, ami a kívánt viselkedés.
+>
+> Ezen felül `[FIX-ESP-56]`: **maga a deep sleep** (és az áramtalanítás utáni
+> `POWERON` → alvás) **nullázza** a perzisztens „volt aktív" jelzést RTC-ben és
+> NVS-ben is. Így az alvás közben/után jövő hibás reset sem tud görgőt indítani.
 >
 > **Failsafe után** (beragadt/inkonzisztens relé) szintén **nincs** auto-indítás:
 > a failsafe **detektálásakor** (még a `STATE_FAILSAFE` beállítása előtt) minden
@@ -546,6 +584,7 @@ A teljes, részletes változás-napló ([MOD-x] / [FIX-ESP-x] bejegyzésekkel):
 
 | Verzió | Változás |
 | --- | --- |
+| **7.15.0** | **Deep sleep alatt beragadó görgő-relé javítása.** `[FIX-ESP-55]` **pad-hold**: alvás előtt a firmware rögzíti (`gpio_hold_en` + C3-on `gpio_deep_sleep_hold_en`) az 5 relé-lábat, így alvás alatt sem lebegnek — eddig a `RELAY_EN`/`RELAY_MAIN` az alvás teljes idejére nagyimpedanciás lett, és a görgő reléje behúzva maradhatott (ébredéskor a bootteszt jogosan beragadt fő relét jelzett → failsafe). A `setup()` a biztonságos szintre hajtás után oldja fel a holdot (C6-on a GPIO2 RTC-holdja az ébredést is túléli). `[FIX-ESP-56]` **kontrollált kikapcsolás**: az `enterDeepSleep()` eddig csak fizikailag kapcsolt le (`disableRelays()`), de a „görgő aktív volt" jelzés `savedMain=1`-en maradt RTC-ben **és** NVS-ben — egy későbbi BROWNOUT/WDT/UNKNOWN reset boot-helyreállítása ebből **magától visszakapcsolta a görgőt**. Most az alvás (és a `POWERON` → alvás) nullázza az állapotot; a `disableRelays()` a `mainActive`-ot is törli, az OTA-reboot pedig a reset előtt biztonságos szintre hajtja a reléket. |
 | **7.14.9** | **Átvilágítás.** `[FIX-ESP-50]` **kritikus regresszió**: a hibás reset utáni boot-helyreállítás tévedésből az 5x-kattintásos bypass-kapcsoló alá került, így alapbeállításban (bypass=ki) **egyáltalán nem futott** — visszaállítva feltétel nélkülire. `[FIX-ESP-51]` OTA **heap-túlolvasás**: a `0xFC` ellenőrizetlen hosszmezője a 16 KB-os pufferen túlra olvastatott (a `0xFB` író ág már határ-ellenőrzött volt) → határellenőrzés + abort. `[FIX-ESP-52]` `DIAGCLR` aktív `DIAG?` stream közben csonkolta a naplót nyitott olvasó-handle mellett → a kérés függőben marad. `[FIX-ESP-53]` további `millis()`-túlcsordulásra érzékeny határidők (OTA reboot/telepítés, forrás-prioritás zárolás) wrap-safe-re. Memória/CPU: OTA-csomagonkénti és BLE-parancsonkénti felesleges `String` heap-allokációk megszüntetése (`getLength()`, `constexpr` PIN-ellenőrzés), halott globálisok/include/őrfeltétel törlése. |
 | **7.14.0** | **`RELAY_ROLLER` → `RELAY_MAIN`** átnevezés: a fő relé a **görgőt ÉS a ventilátor tápját** kapcsolja (a hozzá tartozó belső nevek `main`-re: `mainActive`, `savedMain`, NVS-kulcs `fan/main` stb.; a BLE `ROLLER:` wire-parancs marad). **Bootkori relé-önteszt** (`RELAY_TEST_AT_BOOT`): SW-reset/gombébresztéskor a fan-reléket sorban kapcsolja (fő relé OFF), és a bontón mért AC-ból **beragadt fő relét** detektál → `[relay] main stuck!` + failsafe. **CRC32 önteszt → OTA letiltás** FAIL esetén (release-ben is) + `OTA_ROLLBACK_ON_CRC_FAIL` kapcsoló. **diag.log: csak hibák** + sticky `[ver]` verziósor (trim/`DIAGCLR` megőrzi) + `[relay]` cimkék; a `[sleep]`/health-check-OK info-sorok kivéve. **Fan-sense konzisztencia** a fő relével: fő relé OFF alatt nincs AC-referencia → a mismatch-figyelés kilép (nincs téves STUCK/NOAC), `activateMain` grace-t állít, `deactivateMain` a fan-reléket+zónát nullázza; a fokozatváltás fő relé nélkül is végrehajtódik. **Aktivitás-definíció**: fő relé be ÉS megy a ventilátor (auto módban BLE-vel, manuál módban anélkül). |
 | **7.13.0** | **AC-érzékelés a relé bontó (NC) érintkezőjén** (a soros fan-tekercsek miatt a kimenet-figyelés nem tudta megkülönböztetni a fokozatokat) → bekötés-leképezés a `FAN_SENSE_AC_MEANS_ENGAGED` makróval (alapból **`0`**); a detektálás **LOW-alapú** (opto-vezetés), így az opto-kimeneti RC-szűrő kiesése **sem** ad téves STUCK-ot. A STUCK/NOAC failsafe-logika változatlanul helyes. **Soros kimenet egységesítése**: `Serial.begin` (és `flush`) csak ha `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` valamelyike aktív; minden debugon kívüli `Serial.print` kapuzott makróra cserélve. Megjegyzések egysorosra húzva. |
