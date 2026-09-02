@@ -415,7 +415,7 @@ Ha a fő relé **aktív volt**, a fokozat **RTC-elsőbbséggel** áll vissza (a 
 
 ## Diagnosztikai napló
 
-A firmware egy kis (max **512 byte**, körkörös) naplót vezet a SPIFFS-en
+A firmware egy kis (max **512 byte**, körkörös) naplót vezet a fájlrendszeren
 (`/diag.log`), ami BLE-n a `DIAG?` paranccsal lekérdezhető. A naplóba **csak hibák
 és diagnosztikai események** kerülnek (a rutin „sikeres/info" bejegyzések — pl.
 deep sleep belépés, OTA health-check OK — **nem**):
@@ -450,7 +450,7 @@ A frissítés a dedikált OTA BLE szolgáltatáson keresztül történik. Védel
 
 - **Per-part CRC32 + újraküldés** (`[FIX-ESP-34]`, 7.9.0): a `0xFC` part-vége
   csomag **4 byte CRC32-t** (zlib-kompatibilis) hordoz a part adataira. A fogadó
-  a SPIFFS-írás **előtt** ellenőrzi; eltérésnél **nem ír**, hanem ugyanazt a
+  a fájlba írás **előtt** ellenőrzi; eltérésnél **nem ír**, hanem ugyanazt a
   partot kéri újra (`0xF1`), legfeljebb **5×**, utána abort (`0x0F` hibaüzenet +
   `[ota] crc retry/abort` a diag naplóba). A part-feldolgozás **soros**: a
   következő part kérése csak CRC-OK + sikeres írás után megy ki.
@@ -496,7 +496,24 @@ A frissítés a dedikált OTA BLE szolgáltatáson keresztül történik. Védel
 | `spiffs` | data | spiffs | 0x2B0000 | 0x150000 (1,3 MB) |
 
 Az `nvs` partíció tárolja a fokozatot (`fan/zone`) és a fő relé állapotát
-(`fan/main` — görgő + ventilátor táp), a `spiffs` a diag naplót.
+(`fan/main` — görgő + ventilátor táp), a `spiffs` a diag naplót és az OTA alatt a
+staging fájlt (`/update.bin`).
+
+> **A `spiffs` partíción v7.18.0 óta LittleFS van, nem SPIFFS** (`[FIX-ESP-65]`) — a
+> partíció **neve és altípusa** marad `spiffs`, mert a `LittleFS.begin()` alapértelmezés
+> szerint épp ezt a címkét keresi, így a partíciós tábla változatlan. Miért:
+> - **áramszünet-biztonság** — a LittleFS copy-on-write, páros metaadat-blokkokkal:
+>   írás közbeni áramtalanítás nem hagy sérült/felcsatolhatatlan fájlrendszert. Ez az
+>   eszköz pont rossz pillanatokban ír: a `diag.log` bejegyzés brownout/WDT reset **után**,
+>   bootkor születik, az OTA meg egy ~0,7 MB-os `/update.bin`-t stagel;
+> - **telített fájlrendszer** — a SPIFFS ~75–80% fölött a szemétgyűjtés miatt drasztikusan
+>   belassul, márpedig az OTA jócskán megtölti a partíciót; a LittleFS a nagy fájlt és az
+>   append-et lényegesen jobban bírja.
+>
+> **Egyszeri hatás a frissítéskor:** az első boot a régi, SPIFFS-formátumú partíciót nem
+> tudja felcsatolni, ezért **megformázza** — a korábbi `diag.log` elveszik. Ez a napló
+> első sorában látszik is (`[fs] mount failed -> formatted`). Ugyanez fordítva is igaz:
+> egy SPIFFS-es buildre visszagörgetve az is formázna egyet.
 
 ---
 
@@ -599,6 +616,7 @@ A teljes, részletes változás-napló ([MOD-x] / [FIX-ESP-x] bejegyzésekkel):
 
 | Verzió | Változás |
 | --- | --- |
+| **7.18.0** | `[FIX-ESP-65]` **SPIFFS → LittleFS** a `spiffs` partíción (a partíciós tábla változatlan: a `LittleFS.begin()` alapból ezt a címkét keresi). Indok: **áramszünet-biztos** copy-on-write írás (az eszköz pont brownout/WDT után, bootkor naplóz, és OTA alatt ~0,7 MB-ot stagel), és a SPIFFS ~75–80% telítettség fölötti drasztikus lassulásának elkerülése. A mount kétlépcsős lett: előbb formázás nélkül, és ha nem csatolható, formázás **+ napló** (`[fs] mount failed -> formatted`) — így a váltás egyszeri formázása és egy későbbi fájlrendszer-sérülés is látszik. **Frissítéskor a régi `diag.log` egyszer elveszik.** Ár: +6,6 kB flash, +120 B statikus RAM. |
 | **7.17.0** | **Karbantarthatóság (viselkedés-semleges).** Két **fordítási idejű** védőháló: `static_assert` a **pin-ütközésre** (a `PINS` blokk kézzel karbantartott C3/C6 listája — a C3-on a GPIO20/21 = U0RXD/U0TXD és a GPIO2/8/9 strapping miatt különösen éles), és arra, hogy a **`BUTTON_PIN` képes-e deep sleepből ébreszteni** (`SOC_GPIO_DEEP_SLEEP_WAKE_VALID_GPIO_MASK`) — rossz láb esetén eddig az eszköz egyszerűen nem ébredt volna fel. Duplikációk kiemelése: `fanRelaysOff()` (8 helyen ismételt hármas) és `ledBlink()`/`ledHeartbeat()` (a piros/sárga ág szó szerint ugyanaz volt; `handleLEDs()` ~100 → ~25 sor). Az **OTA opkódok** néven nevezve (`OTA_RX_*` / `OTA_TX_*`, csomagformátummal), `SPIFFS.` → `FLASH.` egységesítés, halott `bootMagic` törölve. **CI:** `--warnings all`, és a build elbukik, ha a sketch sorára esik `warning:` (ez fogta volna meg magától a NimBLE-váltáskor a deprecated `BLE2902`-t). Flash: C3 685 799 → **685 717**, C6 787 842 → **787 760** bájt. |
 | **7.16.2** | `[FIX-ESP-64]` **A watchdog már csak a `loop()`-ot figyeli** (`idle_core_mask = 0`, ami az Arduino gyári beállítása is). Az idle-task bejegyzés nem azt méri, hogy „él-e a program" (azt a `loopTask` bejegyzése teszi), hanem hogy „volt-e a CPU-nak üresjárata"; egymagos chipen ez alig ad pluszt (ha bármi tényleg felzabálja a CPU-t, a `loop()` sem fut, tehát a saját bejegyzésünk amúgy is eldurran), viszont **féloldalassá tette a `performUpdate()` `esp_task_wdt_delete(NULL)` hívását** a hosszú flash-írás alatt, és egy téves pánik `TASK_WDT` reset-okot ad, amit a boot-helyreállítás hibás resetnek tekint → **visszakapcsolhatta volna a görgőt**. Az OTA-leiratkozás így már teljes (nem marad TWDT-bejegyzés, a timer is leáll). |
 | **7.16.1** | `[FIX-ESP-63]` **A boot-kori watchdog-konfiguráció némán elbukhatott.** A `setup()` ellenőrzés nélküli `esp_task_wdt_deinit()`+`esp_task_wdt_init()` párral írta felül a TWDT-t; a `deinit()` viszont `ESP_ERR_INVALID_STATE`-tel bukik, ha bárki fel van iratkozva a TWDT-re, és akkor az `init()` is ("already initialized") → **némán a gyári 5 s marad a szándékolt 15 s helyett**. (A mai core-beállítással átmegy — de ez a körülményektől függ, nem a kódtól.) Helyette `esp_task_wdt_reconfigure()` (a futó TWDT-t írja át, `deinit()` nélkül), `init()` csak tartaléknak; minden visszatérési érték ellenőrizve, hiba esetén `diag.log` bejegyzés. Ugyanez a `performUpdate()` négy WDT-visszairatkozására is. |

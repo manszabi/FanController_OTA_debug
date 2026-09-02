@@ -10,7 +10,7 @@
 #include "driver/gpio.h"  // [FIX-ESP-55] pad-hold: kimenetek rögzítése deep sleep alatt
 #include <Update.h>
 #include "FS.h"
-#include "SPIFFS.h"
+#include "LittleFS.h"  // [FIX-ESP-65] SPIFFS helyett (áramszünet-biztos, telített FS-en is gyors)
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include <Preferences.h>  // [FIX-ESP-21] NVS fokozat-mentés áramtalanításra
@@ -68,7 +68,7 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.17.0"
+#define FIRMWARE_VERSION "7.18.0"
 #define FIRMWARE_DATE "2026-09-02"
 
 // ===================== PINS =====================
@@ -127,8 +127,11 @@ bool fanNoacWarned[3] = { false, false, false };     // NOAC: figyelmeztettünk-
 #endif                                               // FAN_SENSE_ENABLE
 
 // ===================== FS / OTA DEFINES =====================
-#define FLASH SPIFFS
-#define FORMAT_SPIFFS_IF_FAILED true
+// [FIX-ESP-65] A fájlrendszer a `FLASH` makrón keresztül érhető el az egész forrásban;
+// a SPIFFS → LittleFS váltás így ténylegesen ez az egy sor. A LittleFS alapértelmezett
+// partíció-címkéje `"spiffs"`, ezért a `partitions_custom.csv` változatlan marad.
+#define FLASH LittleFS
+#define FORMAT_FS_IF_FAILED true
 
 #define OTA_NORMAL_MODE 0
 #define OTA_UPDATE_MODE 1
@@ -155,7 +158,7 @@ static uint8_t* otaBuf = nullptr;
 
 // ===================== DIAG LOG (FIX-ESP-14) =====================
 #define DIAG_LOG_PATH "/diag.log"
-const size_t DIAG_LOG_MAX = 512;               // napló max. mérete: kicsi a SPIFFS-hely/kopás miatt (körkörös, [ver] sticky)
+const size_t DIAG_LOG_MAX = 512;               // napló max. mérete: kicsi a flash-hely/kopás miatt (körkörös, [ver] sticky)
 const uint32_t LOW_HEAP_THRESHOLD = 20000;     // ~20 kB szabad heap alatt "kevés memória" bejegyzés (BLE/OTA tartalék)
 const size_t DIAG_CHUNK_SIZE = 20;             // = alap BLE MTU (23) − 3 ATT overhead → fragmentálás nélkül átmegy
 const unsigned long DIAG_CHUNK_INTERVAL = 25;  // ms két csomag között (BLE flow control)
@@ -535,7 +538,7 @@ static uint32_t crc32_zlib(const uint8_t* p, size_t n) {
 
 // [FIX-ESP-57] Az OTA állapotgép teljes alaphelyzetbe állítása (puffer felszabadítással).
 // Eddig ugyanez a mező-lista háromszor, apró eltérésekkel ismétlődött (otaAbort,
-// otaWriteBinary "SPIFFS full", onDisconnect) — és egy negyedik helyen HIÁNYZOTT.
+// otaWriteBinary "FS full", onDisconnect) — és egy negyedik helyen HIÁNYZOTT.
 static void otaResetState() {
   otaMode = OTA_NORMAL_MODE;
   otaInstallWaiting = false;
@@ -597,11 +600,11 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
   OTA_DBG_VLN(otaReceivedBytes);
 
   if (written < (size_t)len) {
-    DBG_P("SPIFFS full! Wrote ");
+    DBG_P("FS full! Wrote ");
     DBG_V(written);
     DBG_P(" of ");
     DBG_V(len);
-    DBG_P(" bytes (SPIFFS free: ");
+    DBG_P(" bytes (FS free: ");
     DBG_V(FLASH.totalBytes() - FLASH.usedBytes());
     DBG(")");
     DBG("Aborting OTA");
@@ -614,7 +617,7 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
     }
 
     if (pOtaTx) {
-      String result = String((char)OTA_TX_RESULT) + "ERR: SPIFFS full";
+      String result = String((char)OTA_TX_RESULT) + "ERR: FS full";
       pOtaTx->setValue(result.c_str());
       pOtaTx->notify();
       delay(200);
@@ -667,7 +670,7 @@ void ota_boot_flow() {
     DBG(")");
 #endif
 
-    // Health-check: NE validáljuk most — a loop/enterDeepSleep majd, stabil futás után (itt a SPIFFS sincs még mountolva)
+    // Health-check: NE validáljuk most — a loop/enterDeepSleep majd, stabil futás után (itt a fájlrendszer sincs még felcsatolva)
     if (state == ESP_OTA_IMG_PENDING_VERIFY) {
       otaPendingVerify = true;
       DBG("PENDING_VERIFY → health-check: validalas stabil futas utan");
@@ -1095,7 +1098,7 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
         }
       } else {
         // [FIX-ESP-51] A 0xFC hosszmezője (0..65535) vezérli a CRC-számítás és a
-        // SPIFFS-írás olvasását az OTA_BUF_SIZE (16 KB) pufferből. A 0xFB író ág már
+        // fájlba írás olvasását az OTA_BUF_SIZE (16 KB) pufferből. A 0xFB író ág már
         // határ-ellenőrzött, ez viszont eddig nem volt: sérült/eltérő PART-méretű
         // kliens ~48 KB heap-túlolvasást okozhatott. Nem fér bele → abort.
         int wlen = (pData[1] * 256) + pData[2];
@@ -1125,16 +1128,16 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
       DBG_P("OTA size: ");
       DBG_VLN(otaTotalBytes);
 
-      const uint32_t SPIFFS_OVERHEAD = 4096;
-      if (otaTotalBytes + SPIFFS_OVERHEAD > fsFree) {
-        DBG("ERR: SPIFFS too small for OTA");
+      const uint32_t FS_OVERHEAD = 4096;  // egy blokknyi tartalék a fájlrendszer metaadatainak
+      if (otaTotalBytes + FS_OVERHEAD > fsFree) {
+        DBG("ERR: FS too small for OTA");
         DBG_P("Need (with overhead): ");
-        DBG_VLN(otaTotalBytes + SPIFFS_OVERHEAD);
+        DBG_VLN(otaTotalBytes + FS_OVERHEAD);
         DBG_P("Available: ");
         DBG_VLN(fsFree);
 
         if (pOtaTx) {
-          String result = String((char)OTA_TX_RESULT) + "ERR: SPIFFS too small (need " + String(otaTotalBytes + SPIFFS_OVERHEAD) + ", have " + String(fsFree) + ")";
+          String result = String((char)OTA_TX_RESULT) + "ERR: FS too small (need " + String(otaTotalBytes + FS_OVERHEAD) + ", have " + String(fsFree) + ")";
           pOtaTx->setValue(result.c_str());
           pOtaTx->notify();
           delay(200);
@@ -1322,7 +1325,7 @@ static const char* resetReasonStr(esp_reset_reason_t r) {
 }
 
 void diagLog(const char* line) {
-  // [FIX-ESP-42] Guard: avoid concurrent FILE_APPEND while diagStreaming holds FILE_READ on SPIFFS
+  // [FIX-ESP-42] Guard: avoid concurrent FILE_APPEND while diagStreaming holds FILE_READ on the FS
   if (diagStreaming) return;
 
   if (FLASH.exists(DIAG_LOG_PATH)) {
@@ -1602,8 +1605,19 @@ void setup() {
 
   DBG("Boot");
 
-  if (!FLASH.begin(FORMAT_SPIFFS_IF_FAILED)) {
-    DBG("SPIFFS mount fail");
+  // [FIX-ESP-65] Előbb formázás NÉLKÜL próbálunk csatolni, hogy meg tudjuk különböztetni
+  // a "rendben felcsatolt" és a "nem volt csatolható → megformáztuk" esetet — és az
+  // utóbbit naplózni is tudjuk. Ide esik a SPIFFS → LittleFS váltás egyszeri formázása
+  // is (a régi SPIFFS-tartalom nem csatolható LittleFS-ként), meg egy esetleges későbbi
+  // fájlrendszer-sérülés is. A `begin()` felcsatolt állapotban azonnal `true`-val tér
+  // vissza, ezért a kétlépcsős hívás biztonságos.
+  if (!FLASH.begin(false)) {
+    if (FLASH.begin(FORMAT_FS_IF_FAILED)) {
+      DBG("FS not mountable → formatted");
+      diagLog("[fs] mount failed -> formatted");
+    } else {
+      DBG("FS mount + format FAILED");
+    }
   }
 
   if (FLASH.exists("/update.bin")) {

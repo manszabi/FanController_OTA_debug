@@ -557,3 +557,52 @@ váltáskor kézzel kellett észrevenni (a NimBLE alatt `[[deprecated]]` `BLE290
 *Ellenőrzés: mindkét cél `--warnings all` mellett hiba- és figyelmeztetés-mentesen fordul
 `esp32:esp32@3.3.11` alatt; a CI-kapu logikája helyben kipróbálva mindkét irányban.*
 
+---
+
+## v7.18.0 — SPIFFS → LittleFS
+
+- **[FIX-ESP-65]** 2026-09-02: **7.18.0** — **A `spiffs` partíción LittleFS fut, nem SPIFFS.**
+  A kód oldalán ez ténylegesen **két sor** (`#include` + a `FLASH` makró), mert a
+  fájlrendszert az egész forrás a `FLASH` makrón át éri el (a `setup()` maradék négy
+  közvetlen `SPIFFS.` hívását a v7.17.0 egységesítette), a `LittleFSFS` pedig ugyanúgy
+  `FS`-leszármazott: a `File` API (`open/read/write/seek/available/readStringUntil/close`),
+  a `FILE_READ/WRITE/APPEND` és a `totalBytes()/usedBytes()/format()/exists()/remove()`
+  szignatúrája azonos.
+
+  **Partíciós tábla nem változik:** a `LittleFS.begin()` alapértelmezett
+  `partitionLabel`-je `"spiffs"`, tehát ugyanazt a partíciót csatolja.
+
+  **Miért érte meg épp ennek az eszköznek:**
+  - **Áramszünet-biztonság.** A LittleFS copy-on-write, páros metaadat-blokkokkal: írás
+    közbeni áramtalanítás nem hagy sérült, felcsatolhatatlan fájlrendszert (a SPIFFS-nél
+    ez reális kimenet). Ez a firmware pont a rossz pillanatokban ír: a `diag.log`
+    bejegyzés **brownout/WDT reset után, bootkor** születik, az OTA pedig egy ~0,7 MB-os
+    `/update.bin`-t stagel a partícióra.
+  - **Telített fájlrendszer.** A SPIFFS ~75–80% fölött a szemétgyűjtés miatt drasztikusan
+    belassul — az OTA viszont épp jócskán megtölti a partíciót. A LittleFS a nagy fájlt és
+    az append-et lényegesen jobban bírja.
+  - A SPIFFS felfelé gyakorlatilag karbantartatlan; új terveknél a LittleFS az ajánlott.
+
+  **A mount kétlépcsős lett.** Eddig `begin(FORMAT_..._IF_FAILED)` volt egyetlen hívásban,
+  ami elrejti, hogy kellett-e formázni. Most előbb formázás **nélkül** próbálunk csatolni,
+  és ha ez nem megy, formázunk + naplózunk (`[fs] mount failed -> formatted`). Így látszik
+  a naplóban a SPIFFS→LittleFS váltás egyszeri formázása **és** egy esetleges későbbi
+  fájlrendszer-sérülés is. (A `begin()` felcsatolt állapotban azonnal `true`-val tér vissza
+  — `esp_littlefs_mounted()` ellenőrzéssel —, ezért a kétlépcsős hívás biztonságos.)
+
+  **Egyszeri hatás a frissítéskor:** az első boot a régi, SPIFFS-formátumú partíciót nem
+  tudja LittleFS-ként felcsatolni, ezért **megformázza** → a korábbi `diag.log` elveszik.
+  Ugyanez fordítva is igaz: egy SPIFFS-es buildre visszagörgetve az is formázna egyet.
+
+  **Átnevezések és szövegek:** `FORMAT_SPIFFS_IF_FAILED` → `FORMAT_FS_IF_FAILED`,
+  `SPIFFS_OVERHEAD` → `FS_OVERHEAD`, a log-/hibaszövegekben „SPIFFS" → „FS"
+  (`ERR: FS full`, `ERR: FS too small (need …)`). A BLE-n visszaküldött hibaszövegre
+  **egyik Python eszköz sem illeszt** (csak kiírja), ezért ez biztonságos csere.
+
+  **Ár:** flash C3 685 717 → **692 383** bájt (49% → 50%), C6 787 760 → **794 414** bájt
+  (57%); statikus RAM +120 bájt. A LittleFS a felcsatoláskor pár kB heapet foglal a
+  cache-nek — ahogy a SPIFFS is.
+
+*Ellenőrzés: mindkét cél `--warnings all` mellett hiba- és figyelmeztetés-mentesen fordul
+`esp32:esp32@3.3.11` alatt.*
+
