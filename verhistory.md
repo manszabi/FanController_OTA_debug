@@ -323,3 +323,83 @@ jogosan „beragadt fő relét" jelez → failsafe → az eszköz leáll.*
 *Ellenőrzés: mindkét cél (XIAO ESP32-C3 és C6) hibamentesen fordul `esp32:esp32@3.1.3`
 (CI-pin) és `@3.3.11` alatt is; a `PAD_HOLD_NEEDS_GLOBAL_DSLP` mindkét core-on a helyes
 ágat választja (C3 → 1, C6 → 0, `static_assert`-tel ellenőrizve).*
+
+---
+
+## v7.16.0 — Átvilágítás friss szemmel + toolchain a 3.3.11-es core-ra
+
+*A vizsgálat kifejezetten az `esp32:esp32@3.3.11` (IDF 5.5) core-ra készült. A 3.3-as
+core-tól az alapértelmezett BLE stack **NimBLE** (a 3.1.x-ben Bluedroid volt) — a `BLE`
+könyvtár API-ja azonos, a viselkedése nem; az alábbi FIX-ESP-58/61 ebből fakad.*
+
+- **[FIX-ESP-57]** 2026-09-02: **7.16.0** — **Bukott OTA-telepítés után az eszköz
+  véglegesen OTA-módban ragadt.** A `performUpdate()` három bukó ága (rossz `0xE9` magic,
+  `Update.begin()` hiba, `Update.end()` hiba) `return`-nel lépett ki, **anélkül, hogy az
+  `otaMode`-ot visszaállította volna**. A hívó `updateFromFS()` előtt az `otaLoop()` már
+  kinullázta az `otaTotalBytes`-t, így az `OTA_INSTALL_MODE` ágon utána **egyik feltétel
+  sem illeszkedett** — se telepítés, se abort. Következmény: `otaIsRunning()` örökre igaz
+  → a `stateMachineStep()` azonnal visszatér, tehát **nem fut a gomb (`button.tick()`), a
+  failsafe, a relé-eltérés-figyelés, a diag-kiszolgálás és az NVS-mentés sem**, a LED-ek
+  OTA-mintát villognak, a relék az aktuális állapotukban maradnak. Csak a BLE-kapcsolat
+  bontása (`onDisconnect`) vagy áramtalanítás hozta vissza. Javítás: a `performUpdate()`
+  `bool`-t ad vissza, és bukásnál a hívó kötelezően `otaResetState()`-et hív (a diag
+  naplóba is bekerül). Egyúttal a háromszor, apró eltérésekkel ismételt OTA-mező-nullázás
+  (`otaAbort`, `otaWriteBinary` „SPIFFS full", `onDisconnect`) közös
+  `otaResetState()`-be került — így nem maradhat ki mező (az `otaAbort` eddig pl. az
+  `otaInstallWaiting`-et nem törölte).
+- **[FIX-ESP-58]** 2026-09-02: **7.16.0** — **`pServer->disconnect(0)`: hardkódolt
+  kapcsolat-azonosító.** A BLE-kapcsolat bontása két helyen (kézi mód bekapcsolása,
+  `enterDeepSleep`) fixen a `0` azonosítót zárta. NimBLE alatt viszont a `conn_handle`-t
+  a kontroller osztja (0, 1, 2 … újrahasznosítva), tehát az **első újracsatlakozás után a
+  bontás egyszerűen nem történik meg** (`ble_gap_terminate` `ENOTCONN`). A kézi módnál ez
+  a rosszabb: a kód utána mégis `bleConnected = false`-ra állt, így az `onDisconnect`
+  **soha nem futott le** — nem nullázódott az auth/OTA/diag állapot, és a
+  `bleDisconnectTime` 0 maradt, amitől a **12 perces „BLE elszállt → mindent le"
+  biztonsági időzítő el sem indult**, miközben a ventilátor futott. Javítás: a könyvtár
+  saját, mindkét stack alatt karbantartott `pServer->getConnId()`-je (3.1.x-ben is
+  létezik). Alvás előtt így a kliens is tiszta bontást kap supervision-timeout helyett.
+- **[FIX-ESP-59]** 2026-09-02: **7.16.0** — **A bootkori relé-önteszt órákkal később is
+  elsülhetett.** A `relayTestPending` egyszeri jelzés volt, de a lefutást csak a
+  `!bleConnected` kapuzta — időkorlát nélkül. Ha a telefon a boot utáni pillanatban
+  visszacsatlakozott (advertising indulása és az első `loop()` között), a teszt függőben
+  maradt, és **az első BLE-bontáskor sült el**, akár órákkal később, **működő görgő
+  mellett**: `RELAY_MAIN`-t OFF-ra hajtotta és végigkapcsolta a fan-reléket, a
+  `mainActive` viszont igaz maradt. Emiatt a `checkFanRelayMismatch()` nem lépett ki a
+  `!mainActive` ágon, és NC-bekötésnél az **AC hiánya mind a három ágon „behúzva"-nak
+  látszik** (`FAN_SENSE_AC_MEANS_ENGAGED=0`) → `relaysEnabled=false` mellett azonnali,
+  **téves `STUCK` → failsafe → 10 s villogás → deep sleep**. Javítás: `RELAY_TEST_WINDOW_MS`
+  (15 s) időablak, és elévülés, ha közben elindult a görgő/tápengedély; a `relayBootTest()`
+  a `mainActive`-ot is nullázza (a tesztet követően a MAIN fizikailag OFF).
+- **[FIX-ESP-60]** 2026-09-02: **7.16.0** — a `failSafeMode()` minden körben lehúzza a
+  `RELAY_EN`-t, de a `relaysEnabled` flag `true` maradt (hamis állapot a mismatch-logika
+  és a diag számára) — nullázva.
+- **[FIX-ESP-61]** 2026-09-02: **7.16.0** — **NimBLE: a kézi `BLE2902` deprecated.** A
+  CCCD (0x2902) leírót NimBLE automatikusan létrehozza a `NOTIFY` property mellé, és a
+  könyvtár a kézi hozzáadást fel is ismeri (no-op) — de az osztály `[[deprecated]]`,
+  ez adta az egyetlen két fordítási figyelmeztetést 3.3.11 alatt. A hozzáadás
+  `#if !defined(CONFIG_NIMBLE_ENABLED)` mögé került (szándékosan a NimBLE HIÁNYÁT nézve,
+  nem a Bluedroid meglétét: ha a Bluedroid-makró neve változna, a leíró akkor is
+  bekerül — a hiánya Bluedroid alatt működésképtelen notify-t adna).
+- **[FIX-ESP-62]** 2026-09-02: **7.16.0** — **OTA: csomag-hossz ellenőrzés a fejléc-mezők
+  előtt.** Csonka csomagnál a `0xFB` (`pData[1]`) és a `0xFE`/`0xFF` (`pData[1..4]`) a BLE
+  értékpuffer végén túl olvasott. A `0xFC`-nek már volt hossz-őre (`[FIX-ESP-51]`), a
+  többinek nem — pótolva.
+
+### Toolchain / CI: `esp32:esp32@3.1.3` → `@3.3.11`
+
+- `build.sh` (`CORE_VERSION`), a GitHub Actions workflow (core install + cache-kulcs) és
+  a `.claude/hooks/session-start.sh` (`ESP32_CORE_VERSION`) a 3.3.11-es core-ra állítva —
+  ez fut éles használatban is. A forrás továbbra is fordul a 3.1.x Bluedroid stackkel.
+- A hook **OneButton**-telepítése `git clone`-ra váltott: a GitHub
+  `/archive/refs/tags/…` útvonalát a webes környezet hálózati szabálya 403-mal tiltja
+  (csak release-asset útvonalak engedettek), ezért a lépés eddig **némán** elbukott
+  (a hook `set -e` nélkül fut) és a `./build.sh` „OneButton.h not found"-dal állt meg.
+  Tarball-tartalék + explicit hibajelzés is került mellé.
+- README: a `DEBUG`/`OTA_DEBUG`/`BOOT_DIAG` alapértékei a valósághoz igazítva
+  (mindhárom `0`), és a deep sleep-szakaszból korábban kikerült „interrupt cleanup"
+  lépés leírása is a kódhoz igazítva (`[FIX-ESP-55]` körében).
+
+*Ellenőrzés: mindkét cél (XIAO ESP32-C3 és C6) `--warnings all` mellett **hiba- és
+figyelmeztetés-mentesen** fordul `esp32:esp32@3.3.11` alatt. Flash C3: 685 895 bájt
+(49%), C6: 787 826 bájt (57%).*
+

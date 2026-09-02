@@ -525,8 +525,22 @@ python3 ota_diagnostic.py FanController_OTA_debug.ino.bin
 ## Fordítás (build)
 
 A projekt **Seeed XIAO ESP32-C3** és **ESP32-C6** boardra fordul, **ESP32 Arduino
-core 3.1.3**-mal és a **OneButton** könyvtárral, a `partitions_custom.csv` custom
+core 3.3.11**-mal és a **OneButton** könyvtárral, a `partitions_custom.csv` custom
 partícióval. A pinkiosztást a firmware a cél-chip szerint automatikusan választja.
+
+> **BLE stack: NimBLE (core 3.3.x).** A 3.3-as core-tól az `esp32:esp32` alapértelmezett
+> BLE stackje **NimBLE** (a 3.1.x-ben még Bluedroid volt) — a `BLE` könyvtár API-ja
+> ugyanaz, a megvalósítás nem. Ami ebből a firmware-t érinti:
+> - a **CCCD (0x2902)** leírót NimBLE **automatikusan** létrehozza a `NOTIFY` property
+>   mellé; a kézi `BLE2902` ott `[[deprecated]]`, ezért csak Bluedroid alatt fordul bele
+>   (`#if !defined(CONFIG_NIMBLE_ENABLED)`, `[FIX-ESP-61]`);
+> - a **kapcsolat-azonosító** (`conn_handle`) NimBLE alatt nem garantáltan `0`, ezért a
+>   bontás `pServer->getConnId()`-vel megy (`[FIX-ESP-58]`);
+> - a firmware **jóval kisebb**: C3 ~1 146 KB → ~686 KB, C6 ~1 221 KB → ~788 KB, és
+>   számottevően több a szabad heap.
+>
+> A forrás **mindkét stackkel** fordul (a fenti feltétel a NimBLE hiányát nézi), a CI
+> viszont a 3.3.11-et fordítja.
 
 **Claude Code on the web:** a toolchaint a `.claude/hooks/session-start.sh`
 SessionStart hook automatikusan telepíti minden munkamenet indulásakor
@@ -541,7 +555,7 @@ TARGET=c6 ./build.sh       # fordítás C6-ra (XIAO_ESP32C6)
 **Manuálisan (arduino-cli):**
 
 ```bash
-arduino-cli core install esp32:esp32@3.1.3
+arduino-cli core install esp32:esp32@3.3.11
 arduino-cli lib install OneButton          # vagy GitHubról, ha a registry nem elérhető
 ./build.sh                 # vagy: TARGET=c6 ./build.sh
 ```
@@ -551,7 +565,7 @@ arduino-cli lib install OneButton          # vagy GitHubról, ha a registry nem 
 > `BOOT_DIAG` (boot-diagnosztika). A `Serial.begin(115200)` **csak akkor** fut le, ha
 > **legalább az egyik** be van kapcsolva (`SERIAL_ENABLED`). Ha mindhárom `0`, a Serial
 > el sem indul és semmilyen kiírás nincs (a debug-mentes build ~11 KB-tal kisebb).
-> Alapból `DEBUG=1`, `OTA_DEBUG=0`, `BOOT_DIAG=1`.
+> Alapból mindhárom `0` (release build, Serial ki).
 >
 > A build a `build.partitions=partitions_custom` és `upload.maximum_size=1376256`
 > (az `app0` mérete, 0x150000) build-property-kkel fordít. Méret: **C3 ≈ 83%**
@@ -584,6 +598,7 @@ A teljes, részletes változás-napló ([MOD-x] / [FIX-ESP-x] bejegyzésekkel):
 
 | Verzió | Változás |
 | --- | --- |
+| **7.16.0** | **Átvilágítás + toolchain a 3.3.11-es core-ra.** `[FIX-ESP-57]` **bukott OTA-telepítés után az eszköz véglegesen OTA-módban ragadt** (nem futott a gomb, a failsafe, a relé-figyelés, a diag és az NVS-mentés sem, csak BLE-bontás/áramtalanítás hozta vissza) — a `performUpdate()` bukó ágai nem állították vissza az `otaMode`-ot; közös `otaResetState()`. `[FIX-ESP-58]` `pServer->disconnect(0)` **hardkódolt** kapcsolat-azonosítóval: NimBLE (core 3.3.x) alatt a `conn_handle` az első újracsatlakozás után már nem `0`, így a bontás elmaradt — a kód mégis `bleConnected=false`-ra állt, az `onDisconnect` nem futott le, és a 12 perces „BLE elszállt" biztonsági lekapcsolás **el sem indult**; javítva `getConnId()`-re. `[FIX-ESP-59]` a **bootkori relé-önteszt elévülése**: eddig a végtelenségig függőben maradhatott, és órákkal később, az első BLE-bontáskor sült el — járó görgő mellett lekapcsolta a fő relét, miközben a `mainActive` igaz maradt → azonnali **téves STUCK-failsafe**; most 15 s-os ablak + üzemi állapotnál elévül, és a teszt a `mainActive`-ot is nullázza. `[FIX-ESP-60]` a failsafe fizikailag lehúzta a tápengedélyt, de a `relaysEnabled` flag `true` maradt. `[FIX-ESP-61]` NimBLE: a kézi `BLE2902` deprecated → csak Bluedroid alatt fordul bele. `[FIX-ESP-62]` OTA: csonka `0xFB`/`0xFE`/`0xFF` csomagnál a fejléc-mezőket a BLE-puffer végén túl olvastuk. **CI/toolchain: `esp32:esp32@3.1.3` → `@3.3.11`** (build.sh, GitHub Actions, SessionStart hook); a hook OneButton-telepítése `git clone`-ra váltott (a tarball-útvonalat a webes környezet tiltja) és jelzi, ha elbukott. |
 | **7.15.0** | **Deep sleep alatt beragadó görgő-relé javítása.** `[FIX-ESP-55]` **pad-hold**: alvás előtt a firmware rögzíti (`gpio_hold_en` + C3-on `gpio_deep_sleep_hold_en`) az 5 relé-lábat, így alvás alatt sem lebegnek — eddig a `RELAY_EN`/`RELAY_MAIN` az alvás teljes idejére nagyimpedanciás lett, és a görgő reléje behúzva maradhatott (ébredéskor a bootteszt jogosan beragadt fő relét jelzett → failsafe). A `setup()` a biztonságos szintre hajtás után oldja fel a holdot (C6-on a GPIO2 RTC-holdja az ébredést is túléli). `[FIX-ESP-56]` **kontrollált kikapcsolás**: az `enterDeepSleep()` eddig csak fizikailag kapcsolt le (`disableRelays()`), de a „görgő aktív volt" jelzés `savedMain=1`-en maradt RTC-ben **és** NVS-ben — egy későbbi BROWNOUT/WDT/UNKNOWN reset boot-helyreállítása ebből **magától visszakapcsolta a görgőt**. Most az alvás (és a `POWERON` → alvás) nullázza az állapotot; a `disableRelays()` a `mainActive`-ot is törli, az OTA-reboot pedig a reset előtt biztonságos szintre hajtja a reléket. |
 | **7.14.9** | **Átvilágítás.** `[FIX-ESP-50]` **kritikus regresszió**: a hibás reset utáni boot-helyreállítás tévedésből az 5x-kattintásos bypass-kapcsoló alá került, így alapbeállításban (bypass=ki) **egyáltalán nem futott** — visszaállítva feltétel nélkülire. `[FIX-ESP-51]` OTA **heap-túlolvasás**: a `0xFC` ellenőrizetlen hosszmezője a 16 KB-os pufferen túlra olvastatott (a `0xFB` író ág már határ-ellenőrzött volt) → határellenőrzés + abort. `[FIX-ESP-52]` `DIAGCLR` aktív `DIAG?` stream közben csonkolta a naplót nyitott olvasó-handle mellett → a kérés függőben marad. `[FIX-ESP-53]` további `millis()`-túlcsordulásra érzékeny határidők (OTA reboot/telepítés, forrás-prioritás zárolás) wrap-safe-re. Memória/CPU: OTA-csomagonkénti és BLE-parancsonkénti felesleges `String` heap-allokációk megszüntetése (`getLength()`, `constexpr` PIN-ellenőrzés), halott globálisok/include/őrfeltétel törlése. |
 | **7.14.0** | **`RELAY_ROLLER` → `RELAY_MAIN`** átnevezés: a fő relé a **görgőt ÉS a ventilátor tápját** kapcsolja (a hozzá tartozó belső nevek `main`-re: `mainActive`, `savedMain`, NVS-kulcs `fan/main` stb.; a BLE `ROLLER:` wire-parancs marad). **Bootkori relé-önteszt** (`RELAY_TEST_AT_BOOT`): SW-reset/gombébresztéskor a fan-reléket sorban kapcsolja (fő relé OFF), és a bontón mért AC-ból **beragadt fő relét** detektál → `[relay] main stuck!` + failsafe. **CRC32 önteszt → OTA letiltás** FAIL esetén (release-ben is) + `OTA_ROLLBACK_ON_CRC_FAIL` kapcsoló. **diag.log: csak hibák** + sticky `[ver]` verziósor (trim/`DIAGCLR` megőrzi) + `[relay]` cimkék; a `[sleep]`/health-check-OK info-sorok kivéve. **Fan-sense konzisztencia** a fő relével: fő relé OFF alatt nincs AC-referencia → a mismatch-figyelés kilép (nincs téves STUCK/NOAC), `activateMain` grace-t állít, `deactivateMain` a fan-reléket+zónát nullázza; a fokozatváltás fő relé nélkül is végrehajtódik. **Aktivitás-definíció**: fő relé be ÉS megy a ventilátor (auto módban BLE-vel, manuál módban anélkül). |

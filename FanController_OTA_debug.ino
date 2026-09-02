@@ -37,8 +37,9 @@
 
 // Bootkori ventilátorrelé-önteszt (RELAY_MAIN nélkül): 0=ki, 1=be
 #define RELAY_TEST_AT_BOOT 1
-#define RELAY_TEST_ON_MS 200   // egy relé bekapcsolva-tartása (ms)
-#define RELAY_TEST_GAP_MS 200  // szünet két relé között (ms)
+#define RELAY_TEST_ON_MS 200        // egy relé bekapcsolva-tartása (ms)
+#define RELAY_TEST_GAP_MS 200       // szünet két relé között (ms)
+#define RELAY_TEST_WINDOW_MS 15000  // [FIX-ESP-59] ennyin belül futhat le boot után; utána elévül
 
 // Ventilátorvezérlő debug: _P/_V = print (literál/érték), sima/_VLN = println (literál/érték)
 #if DEBUG
@@ -67,7 +68,7 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.15.0"
+#define FIRMWARE_VERSION "7.16.0"
 #define FIRMWARE_DATE "2026-09-02"
 
 // ===================== PINS =====================
@@ -452,6 +453,28 @@ static uint32_t crc32_zlib(const uint8_t* p, size_t n) {
   return ~crc;
 }
 
+// [FIX-ESP-57] Az OTA állapotgép teljes alaphelyzetbe állítása (puffer felszabadítással).
+// Eddig ugyanez a mező-lista háromszor, apró eltérésekkel ismétlődött (otaAbort,
+// otaWriteBinary "SPIFFS full", onDisconnect) — és egy negyedik helyen HIÁNYZOTT.
+static void otaResetState() {
+  otaMode = OTA_NORMAL_MODE;
+  otaInstallWaiting = false;
+  otaInstallWaitUntil = 0;
+  otaReceivedBytes = 0;
+  otaTotalBytes = 0;
+  otaParts = 0;
+  otaCur = 0;
+  otaMTU = 0;
+  otaWriteLen = 0;
+  otaWriteFile = false;
+  otaPartRetry = 0;
+  otaExpectedPart = 0;
+  if (otaBuf) {
+    free(otaBuf);
+    otaBuf = nullptr;
+  }
+}
+
 static void otaAbort(const String& msg) {
   DBG_P("OTA abort: ");
   DBG_VLN(msg);
@@ -465,20 +488,7 @@ static void otaAbort(const String& msg) {
     delay(200);
   }
   if (FLASH.exists("/update.bin")) FLASH.remove("/update.bin");
-  if (otaBuf) {
-    free(otaBuf);
-    otaBuf = nullptr;
-  }  // [FIX-ESP-38] buffer felszabadítása
-  otaMode = OTA_NORMAL_MODE;
-  otaReceivedBytes = 0;
-  otaTotalBytes = 0;
-  otaParts = 0;
-  otaCur = 0;
-  otaMTU = 0;
-  otaWriteLen = 0;
-  otaWriteFile = false;
-  otaPartRetry = 0;
-  otaExpectedPart = 0;
+  otaResetState();  // [FIX-ESP-57] (benne a [FIX-ESP-38] puffer-felszabadítás is)
 }
 
 static void rebootEspWithReason(const char* reason) {  // [MOD-25] volt: String érték szerint (másolat hívásonként)
@@ -516,20 +526,7 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
     DBG(")");
     DBG("Aborting OTA");
 
-    otaMode = OTA_NORMAL_MODE;
-    otaInstallWaiting = false;
-    otaInstallWaitUntil = 0;
-    otaReceivedBytes = 0;
-    otaTotalBytes = 0;
-    otaParts = 0;
-    otaCur = 0;
-    otaMTU = 0;
-    otaWriteLen = 0;
-    otaPartRetry = 0;
-    if (otaBuf) {
-      free(otaBuf);
-      otaBuf = nullptr;
-    }  // [FIX-ESP-38]
+    otaResetState();  // [FIX-ESP-57]
 
     if (fs.exists(path)) {
       fs.remove(path);
@@ -610,7 +607,10 @@ void sendOtaResult(const String& result) {  // [MOD-25] volt: érték szerint (m
   delay(200);
 }
 
-void performUpdate(Stream& updateSource, size_t updateSize) {
+// [FIX-ESP-57] Visszatérési érték: true = a firmware ki lett írva (újraindulás jön),
+// false = a telepítés MEGBUKOTT. A hívó ilyenkor kötelezően visszaállítja az OTA
+// állapotgépet — enélkül `OTA_INSTALL_MODE`-ban ragadtunk (lásd updateFromFS).
+bool performUpdate(Stream& updateSource, size_t updateSize) {
   String result = String((char)0x0F);
 
   DBG("=== OTA DEBUG START ===");
@@ -660,7 +660,7 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
 
     esp_task_wdt_add(NULL);
     sendOtaResult(result);
-    return;
+    return false;
   }
 
   DBG("Calling Update.begin()...");
@@ -678,7 +678,7 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
 
     esp_task_wdt_add(NULL);
     sendOtaResult(result);
-    return;
+    return false;
   }
 
   DBG("Update.begin OK");
@@ -716,7 +716,7 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
 
     esp_task_wdt_add(NULL);
     sendOtaResult(result);
-    return;
+    return false;
   }
 
   DBG_P("Update.isFinished(): ");
@@ -743,6 +743,7 @@ void performUpdate(Stream& updateSource, size_t updateSize) {
     DBG("No BLE → immediate reboot");
     rebootEspWithReason("OTA done");
   }
+  return true;
 }
 
 void updateFromFS(fs::FS& fs) {
@@ -758,7 +759,16 @@ void updateFromFS(fs::FS& fs) {
 
     if (updateSize > 0) {
       DBG("Start OTA from FS");
-      performUpdate(updateBin, updateSize);
+      // [FIX-ESP-57] Bukott telepítés (rossz magic / Update.begin / Update.end) után az
+      // otaMode eddig OTA_INSTALL_MODE-on maradt, a felső if-ek pedig már egyikre sem
+      // illeszkedtek (otaTotalBytes=0) → az eszköz VÉGLEG OTA-módban ragadt: nem futott
+      // az állapotgép (gomb, failsafe, relé-figyelés, diag, NVS-mentés se), csak a
+      // BLE-bontás vagy áramtalanítás hozta vissza. Most kötelezően visszaállunk.
+      if (!performUpdate(updateBin, updateSize)) {
+        DBG("OTA install failed → OTA state reset");
+        diagLog("[ota] install failed -> state reset");
+        otaResetState();
+      }
     } else {
       DBG("update.bin empty");
     }
@@ -804,24 +814,9 @@ class MyServerCallbacks : public BLEServerCallbacks {
 
     if (otaMode != OTA_NORMAL_MODE) {
       DBG("OTA interrupted – resetting OTA state");
-      otaMode = OTA_NORMAL_MODE;
-      otaInstallWaiting = false;
-      otaInstallWaitUntil = 0;
+      otaResetState();  // [FIX-ESP-57]
       otaPendingReboot = false;
       otaRebootAt = 0;
-      otaReceivedBytes = 0;
-      otaTotalBytes = 0;
-      otaWriteFile = false;
-      otaPartRetry = 0;
-      otaExpectedPart = 0;
-      otaParts = 0;
-      otaCur = 0;
-      otaMTU = 0;
-      otaWriteLen = 0;
-      if (otaBuf) {
-        free(otaBuf);
-        otaBuf = nullptr;
-      }  // [FIX-ESP-38]
       if (FLASH.exists("/update.bin")) {
         FLASH.remove("/update.bin");
         DBG("Incomplete update.bin removed");
@@ -984,6 +979,16 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
 
     OTA_DBG("OTA packet");
 
+    // [FIX-ESP-62] Csonka csomagnál eddig a fejléc-mezőket a BLE értékpuffer VÉGÉN
+    // TÚL olvastuk (0xFB: pData[1]; 0xFE/0xFF: pData[1..4]). A 0xFC-nek már volt
+    // hossz-őre ([FIX-ESP-51] mellett), a többinek nem — pótolva.
+    const int needLen = (pData[0] == 0xFB) ? 2 : ((pData[0] == 0xFE || pData[0] == 0xFF) ? 5 : 1);
+    if (len < needLen) {
+      DBG_P("OTA packet too short, cmd=0x");
+      DBG_VLN(pData[0], HEX);
+      return;
+    }
+
     if (pData[0] == 0xFB) {
       if (otaBuf) {
         int base = pData[1] * otaMTU;
@@ -1141,7 +1146,7 @@ void handleDoubleClick() {
     DBG("Manual mode ON");
 
     if (bleConnected) {
-      pServer->disconnect(0);
+      pServer->disconnect(pServer->getConnId());  // [FIX-ESP-58] nem hardkódolt 0
       delay(100);
     }
 
@@ -1206,7 +1211,9 @@ void otaInitService(BLEServer* server) {
     BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
 
   pOtaRx->setCallbacks(new OtaCallbacks());
-  pOtaTx->addDescriptor(new BLE2902());
+#if !defined(CONFIG_NIMBLE_ENABLED)
+  pOtaTx->addDescriptor(new BLE2902());  // [FIX-ESP-61] lásd a fan-karakterisztikánál
+#endif
   pOtaTx->setNotifyProperty(true);
 
   pOtaService->start();
@@ -1711,7 +1718,16 @@ void setup() {
     BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
 
   pCharacteristic->setCallbacks(new MyCallbacks());
+  // [FIX-ESP-61] A CCCD (0x2902) leírót csak a Bluedroid stack várja kézzel. Az
+  // arduino-esp32 3.3.x alapértelmezett stackje a NimBLE, ami a NOTIFY property mellé
+  // AUTOMATIKUSAN létrehozza — ott a BLE2902 osztály `[[deprecated]]`, a hozzáadás
+  // pedig no-op (a könyvtár felismeri a 0x2902-t és nem teszi a leíró-térképbe).
+  // A feltétel szándékosan a NimBLE HIÁNYÁT nézi (nem a Bluedroid meglétét): így ha egy
+  // core-verzióban a Bluedroid-makró neve változna, a leíró akkor is bekerül — a hiánya
+  // Bluedroid alatt működésképtelen notify-t adna. 3.1.x és 3.3.x alatt is helyes.
+#if !defined(CONFIG_NIMBLE_ENABLED)
   pCharacteristic->addDescriptor(new BLE2902());
+#endif
   pService->start();
 
   otaInitService(pServer);
@@ -1740,8 +1756,18 @@ void loop() {
   unsigned long now2 = millis();
 
 #if RELAY_TEST_AT_BOOT
-  if (!relaySenseBypass) {
-    if (relayTestPending && !bleConnected) {  // egyszeri relé-önteszt, BLE kapcsolat előtt
+  // [FIX-ESP-59] A bootteszt MAIN-t OFF-ra kényszerít és végigkapcsolja a fan-reléket:
+  // ezt CSAK közvetlenül boot után, üzem előtt szabad megtenni. Eddig csak a
+  // `!bleConnected` kapuzta, a `relayTestPending` viszont a végtelenségig függőben
+  // maradt: ha a telefon a boot utáni pillanatban visszacsatlakozott, a teszt ÓRÁKKAL
+  // később, az első BLE-bontáskor sült el — járó görgő mellett lekapcsolta a MAIN-t,
+  // miközben a `mainActive` igaz maradt. Ez azonnal téves "STUCK"-ot ad
+  // (NC-bekötésnél az AC hiánya = "behúzva"), tehát indokolatlan failsafe + leállás.
+  // Most: időablak + üzemi állapot esetén elévül.
+  if (relayTestPending) {
+    if (relaySenseBypass || mainActive || relaysEnabled || now2 >= RELAY_TEST_WINDOW_MS) {
+      relayTestPending = false;  // elévült/nem futtatható — csendben elhagyjuk
+    } else if (!bleConnected) {
       relayTestPending = false;
       relayBootTest();
     }
@@ -2014,6 +2040,7 @@ void failSafeMode() {
   digitalWrite(RELAY_FAN3, HIGH);
   digitalWrite(RELAY_MAIN, HIGH);
   digitalWrite(RELAY_EN, LOW);
+  relaysEnabled = false;  // [FIX-ESP-60] a tápengedély fizikailag LOW → a flag se maradjon true
 
   unsigned long nowfailSafeMode = millis();
 
@@ -2490,6 +2517,7 @@ void relayBootTest() {
   delay(10);
   digitalWrite(RELAY_EN, LOW);
   relaysEnabled = false;
+  mainActive = false;  // [FIX-ESP-59] a teszt a MAIN-t OFF-ra hajtotta → az állapot ne hazudjon
 #if FAN_SENSE_ENABLE
   fanSenseGraceUntil = millis() + FAN_SENSE_GRACE_MS;
   if (totalSamples > 0 && acHits > totalSamples / 10) {  // [FIX-ESP-43] arányos küszöb: >10% hit → beragadt MAIN
@@ -2585,7 +2613,7 @@ void enterDeepSleep(const char* reason) {
   if (bleEnabled) {
     DBG("BLE stop");
     if (bleConnected) {
-      pServer->disconnect(0);
+      pServer->disconnect(pServer->getConnId());  // [FIX-ESP-58] nem hardkódolt 0
       delay(500);  // [FIX-ESP-23] BLE stack teljes kimaradása
     }
     BLEDevice::stopAdvertising();
