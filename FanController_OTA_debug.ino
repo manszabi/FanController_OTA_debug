@@ -68,7 +68,7 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.16.1"
+#define FIRMWARE_VERSION "7.16.2"
 #define FIRMWARE_DATE "2026-09-02"
 
 // ===================== PINS =====================
@@ -626,7 +626,9 @@ bool performUpdate(Stream& updateSource, size_t updateSize) {
   DBG("=== OTA DEBUG START ===");
 
   DBG("WDT delete (flash write may block)...");
-  esp_task_wdt_delete(NULL);  // megj.: a 0. mag idle taskja figyelt MARAD (lásd wdt_config)
+  // [FIX-ESP-64] Az idle-figyelés kikapcsolása óta ez TELJES leiratkozás: a TWDT-nek
+  // nem marad bejegyzése, így a timer is leáll a hosszú flash-írás idejére.
+  esp_task_wdt_delete(NULL);
 
 #if DEBUG
   const esp_partition_t* running = esp_ota_get_running_partition();
@@ -1559,9 +1561,24 @@ void setup() {
   // `esp_task_wdt_reconfigure()`: a FUTÓ TWDT-t írja át (timeout + panic + idle-maszk),
   // deinit nélkül; `init()` csak tartalék, ha a TWDT nem futna. Mindkettő ellenőrizve.
   // (Az `esp_task_wdt_reconfigure()` az IDF 5.3 óta létezik, tehát a core 3.1.x-szel is jó.)
+  //
+  // [FIX-ESP-64] `idle_core_mask = 0`: NEM figyeltetjük a 0. mag idle taskját (ez egyben
+  // az Arduino gyári beállítása is). Az idle bejegyzés nem azt kérdezi, hogy "él-e a
+  // program" (azt a loopTask bejegyzése méri), hanem hogy "volt-e a CPU-nak üresjárata" —
+  // az idle task ugyanis csak akkor fut (és etet), ha semmi más nem futóképes. Egymagos
+  // chipen (CONFIG_FREERTOS_UNICORE=y) ez szinte semmi pluszt nem ad: ha bármi tényleg
+  // felzabálja a CPU-t, a loopTask sem jut futáshoz, tehát a saját bejegyzésünk amúgy is
+  // eldurran. Cserébe viszont két valódi ára van:
+  //   1) féloldalassá teszi a `performUpdate()` `esp_task_wdt_delete(NULL)` hívását — a
+  //      hosszú flash-írás alatt az idle bejegyzés élesben maradt volna;
+  //   2) egy téves pánik `TASK_WDT` reset-okot ad, amit a boot-helyreállítás hibás
+  //      resetnek tekint → VISSZAKAPCSOLHATJA a görgőt. Itt a fals riasztás ára nagyobb,
+  //      mint a hiba, amit védene (a nem engedő szakaszok — pl. a relé-önteszt 200 ms-os
+  //      `delayMicroseconds` ciklusai — pont ilyen fals pánikot okoznának).
+  // Így a watchdog jelentése pontosan az, amit ez a firmware akar: "iterál-e a loop()".
   esp_task_wdt_config_t wdt_config = {
     .timeout_ms = 15000,
-    .idle_core_mask = (1 << 0),  // a 0. mag idle taskja is figyelt (rajta kívül a loopTask)
+    .idle_core_mask = 0,  // [FIX-ESP-64] CSAK a loopTask figyelt — lásd a fenti indoklást
     .trigger_panic = true
   };
 

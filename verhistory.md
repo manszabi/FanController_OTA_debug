@@ -437,13 +437,50 @@ figyelmeztetés-mentesen** fordul `esp32:esp32@3.3.11` alatt. Flash C3: 685 895 
   védelem került a `performUpdate()` négy `esp_task_wdt_add(NULL)` visszairatkozására is:
   ha ezek elbuknának, a loopTask a futás hátralévő részére **őrizetlenül** maradna.
 
-  > **Nyitott, szándékosan nem módosított megfigyelés:** a `wdt_config.idle_core_mask =
+  > **Nyitott megfigyelés (a v7.16.2-ben megszüntetve, lásd `[FIX-ESP-64]`):** a `wdt_config.idle_core_mask =
   > (1 << 0)` a 0. mag idle taskját is figyelteti — ezt a firmware kapcsolja be (az
   > Arduino alapbeállítás nem figyeli). Ennek két következménye van: (1) a
   > `performUpdate()` `esp_task_wdt_delete(NULL)` hívása **nem teljes** védelem a hosszú
   > flash-írásra, mert az idle task figyelt marad; (2) egy TWDT-panic `TASK_WDT` reset-okot
   > ad, amit a boot-helyreállítás hibás resetnek tekint (visszakapcsolhatja a görgőt).
   > A gyakorlatban a flash-műveletek engednek futni az idle tasknak, ezért maradt.
+
+*Ellenőrzés: mindkét cél `--warnings all` mellett hiba- és figyelmeztetés-mentesen fordul
+`esp32:esp32@3.3.11` alatt (C3 685 799 B / 49%, C6 787 842 B / 57%).*
+
+---
+
+## v7.16.2 — A watchdog csak a `loop()`-ot figyeli
+
+- **[FIX-ESP-64]** 2026-09-02: **7.16.2** — **`wdt_config.idle_core_mask`: `(1 << 0)` → `0`.**
+  Eddig a firmware a 0. mag **idle taskját** is felíratta a TWDT-re (az Arduino gyári
+  beállítása ezt nem teszi). Ez a bejegyzés nem azt kérdezi, hogy „él-e a program" — azt a
+  `loopTask` bejegyzése méri, amit a `loop()` eleje etet —, hanem hogy **„volt-e a CPU-nak
+  üresjárata"**: az idle task a legalacsonyabb prioritású, tehát csak akkor fut (és eteti a
+  watchdogot az `idle_hook_cb`-n keresztül), ha semmi más nem futóképes.
+
+  Egymagos chipen (`CONFIG_FREERTOS_UNICORE=y` mindkét célon) ez alig ad pluszt: ha bármi
+  ténylegesen felzabálja a CPU-t, a `loopTask` sem jut futáshoz, tehát a saját bejegyzésünk
+  amúgy is eldurran. Egyedül az az eset marad, amikor egy task úgy pörög, hogy közben a
+  `loop()` még kap időszeletet (azonos prioritáson vagy `taskYIELD()`-del), az idle viszont
+  soha — ilyen task ebben a firmware-ben nincs (saját taskot nem hozunk létre, a BLE
+  host/kontroller taskok pedig magasabb prioritásúak).
+
+  Az ára viszont valós volt:
+  1. **Féloldalassá tette a `performUpdate()` `esp_task_wdt_delete(NULL)` hívását**: a
+     saját taskot levettük a hosszú flash-írás idejére, az idle bejegyzés viszont élesben
+     maradt. Mostantól a leiratkozás teljes — nem marad TWDT-bejegyzés, így az
+     `esp_task_wdt_reconfigure()`/timer-logika a timert is leállítja
+     (`if (!SLIST_EMPTY(&entries_slist)) restart`).
+  2. **Egy téves pánik itt drágább, mint a hiba, amit véd**: a TWDT-panic `TASK_WDT`
+     reset-okot ad, amit a boot-helyreállítás (`[FIX-ESP-22]`) hibás resetnek tekint, tehát
+     **visszakapcsolhatja a görgőt**. Fals riasztásra pedig volt esély: a nem engedő
+     szakaszok (pl. a `relayTestWait()` 200 ms-os `delayMicroseconds()` ciklusai) épp az
+     idle taskot éheztetik — és pontosan ezért kapcsolja ki az Arduino is alapból az
+     idle-figyelést (`CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0` nincs beállítva).
+
+  A watchdog jelentése így pontosan az lett, amit ez a firmware akar: **„iterál-e még a
+  `loop()`"** — 15 s-os timeouttal, panickal.
 
 *Ellenőrzés: mindkét cél `--warnings all` mellett hiba- és figyelmeztetés-mentesen fordul
 `esp32:esp32@3.3.11` alatt (C3 685 799 B / 49%, C6 787 842 B / 57%).*
