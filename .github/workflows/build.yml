@@ -38,5 +38,14 @@ jobs:
           arduino-cli core install esp32:esp32@3.3.11
           arduino-cli lib install OneButton@2.6.1
 
-      - name: Fordítás
-        run: TARGET=${{ matrix.target }} ./build.sh
+      - name: Fordítás (a sketch figyelmeztetései hibának számítanak)
+        run: |
+          set -o pipefail
+          TARGET=${{ matrix.target }} ./build.sh --warnings all 2>&1 | tee build-${{ matrix.target }}.log
+          # Csak a SAJÁT forrásunk figyelmeztetéseire bukunk el: egy jövőbeli core-/könyvtár-
+          # frissítés zaja ne törje a CI-t olyasmin, amit nem mi javítunk. Így viszont a
+          # deprecated API-k (pl. a NimBLE-re váltáskor a BLE2902) azonnal kiderülnek.
+          if grep -E "FanController_OTA_debug\.ino.*warning:" "build-${{ matrix.target }}.log"; then
+            echo "::error::A sketch figyelmeztetéssel fordult — lásd a fenti sorokat."
+            exit 1
+          fi

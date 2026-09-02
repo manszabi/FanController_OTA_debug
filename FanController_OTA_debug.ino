@@ -68,7 +68,7 @@
 #endif
 
 // ===================== VERSION INFO =====================
-#define FIRMWARE_VERSION "7.16.2"
+#define FIRMWARE_VERSION "7.17.0"
 #define FIRMWARE_DATE "2026-09-02"
 
 // ===================== PINS =====================
@@ -133,6 +133,22 @@ bool fanNoacWarned[3] = { false, false, false };     // NOAC: figyelmeztettünk-
 #define OTA_NORMAL_MODE 0
 #define OTA_UPDATE_MODE 1
 #define OTA_INSTALL_MODE 2
+
+// ===================== OTA WIRE-PROTOKOLL =====================
+// Az opkódok eddig csak nyers hex-literálként szerepeltek a kódban; a protokoll leírása
+// kizárólag a `sender/ota.py`-ban élt. Ugyanazok az értékek, néven nevezve.
+// Kliens → eszköz (OTA RX karakterisztika, WRITE / WRITE_NR):
+static const uint8_t OTA_RX_PART_CHUNK = 0xFB;  // [0xFB][darab-index][adat…] — part-darab a pufferbe
+static const uint8_t OTA_RX_PART_END = 0xFC;    // [0xFC][hossz_hi][hossz_lo][part_hi][part_lo][CRC32 4B]
+static const uint8_t OTA_RX_FILE_DEL = 0xFD;    // [0xFD] — /update.bin törlése
+static const uint8_t OTA_RX_TOTAL_SIZE = 0xFE;  // [0xFE][össz-méret 4B]
+static const uint8_t OTA_RX_BEGIN = 0xFF;       // [0xFF][partok_hi][partok_lo][MTU_hi][MTU_lo]
+static const uint8_t OTA_RX_FS_FORMAT = 0xEF;   // [0xEF] — fájlrendszer formázása
+// Eszköz → kliens (OTA TX karakterisztika, NOTIFY):
+static const uint8_t OTA_TX_RESULT = 0x0F;    // [0x0F]"szöveg" — eredmény vagy hibaüzenet
+static const uint8_t OTA_TX_REQ_PART = 0xF1;  // [0xF1][part_hi][part_lo] — ezt a partot kérem
+static const uint8_t OTA_TX_COMPLETE = 0xF2;  // [0xF2][partok_hi][partok_lo] — átvitel kész
+static const uint8_t OTA_TX_FS_INFO = 0xEF;   // [0xEF][total 3B][used 3B] — fájlrendszer-méret
 
 static const size_t OTA_BUF_SIZE = 16384;  // OTA part-puffer (16 KB): átviteli sebesség vs. RAM egyensúly, csak OTA alatt foglalt
 static uint8_t* otaBuf = nullptr;
@@ -284,9 +300,6 @@ bool heartbeatPulse_red = false;
 // ===================== SOROS STÁTUSZ-KIÍRÁS =====================
 const unsigned long printInterval = 30000;  // státusz-kiírás periódusa a soros logba (ne spammeljen)
 
-RTC_NOINIT_ATTR uint32_t bootMagic;
-#define BOOT_MAGIC 0xDEADBEEF
-
 RTC_NOINIT_ATTR uint32_t savedZoneMagic;
 RTC_NOINIT_ATTR int savedZone;
 #define SAVED_ZONE_MAGIC 0xFA11A5EE
@@ -437,6 +450,63 @@ static void relayPadsHoldEnable() {}
 static void relayPadsHoldRelease() {}
 #endif  // DEEP_SLEEP_PAD_HOLD
 
+// ===================== KIS SEGÉDFÜGGVÉNYEK =====================
+// Mindhárom fokozat-relé OFF (aktív-LOW → HIGH=OFF). Nyolc helyen ismétlődött szó
+// szerint; több helyen épp az a lényeg, hogy EGYIK fan se maradjon behúzva
+// (break-before-make, MAIN lekapcsolás, failsafe, bootteszt) — jobb, ha ez egyetlen,
+// néven nevezett műveletnek látszik, mint három egymás mellé másolt sornak.
+static inline void fanRelaysOff() {
+  digitalWrite(RELAY_FAN1, HIGH);
+  digitalWrite(RELAY_FAN2, HIGH);
+  digitalWrite(RELAY_FAN3, HIGH);
+}
+
+// ===================== FORDÍTÁSI IDEJŰ PIN-ELLENŐRZÉSEK =====================
+// A PINS blokk két cél (C3/C6) kézzel karbantartott listája — a legkönnyebben elkövethető
+// hiba, hogy két funkció ugyanarra a GPIO-ra kerül. A C3-on ez különösen éles: a GPIO20/21
+// az U0RXD/U0TXD, a GPIO2/8/9 pedig strapping láb. Derüljön ki fordításkor, ne a panelon.
+// (Szándékosan itt, az első függvénydefiníció UTÁN: az .ino automatikus prototípus-
+// generálása a legelső függvénydefiníció elé szúrja be a prototípusokat, ezért a PINS
+// blokk mellé tett `constexpr` függvények eltolnák a beszúrási pontot.)
+static constexpr uint64_t pinBit(int p) {
+  return (uint64_t)1 << p;
+}
+static constexpr int pinCount(uint64_t mask) {
+  int n = 0;
+  while (mask) {
+    n += (int)(mask & 1);
+    mask >>= 1;
+  }
+  return n;
+}
+
+static constexpr uint64_t USED_PIN_MASK =
+  pinBit(RELAY_FAN1) | pinBit(RELAY_FAN2) | pinBit(RELAY_FAN3) | pinBit(RELAY_MAIN)
+  | pinBit(RELAY_EN) | pinBit(BUTTON_PIN) | pinBit(LED_YELLOW) | pinBit(LED_RED)
+#if FAN_SENSE_ENABLE
+  | pinBit(FAN1_SENSE_PIN) | pinBit(FAN2_SENSE_PIN) | pinBit(FAN3_SENSE_PIN)
+#endif
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+  | pinBit(RF_SWITCH_EN) | pinBit(ANT_SELECT)
+#endif
+  ;
+static constexpr int USED_PIN_TOTAL = 8
+#if FAN_SENSE_ENABLE
+                                      + 3
+#endif
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+                                      + 2
+#endif
+  ;
+static_assert(pinCount(USED_PIN_MASK) == USED_PIN_TOTAL,
+              "PINS: ket funkcio ugyanarra a GPIO-ra van kotve!");
+
+// A gombnak deep sleepbol kell ebresztenie — erre csak a chip RTC/LP-kepes labai
+// alkalmasak (C3: GPIO0-5, C6: GPIO0-7). Rossz lab valasztasa eseten az eszkoz
+// egyszeruen nem ebredne fel; ez fordituskor derul ki.
+static_assert((SOC_GPIO_DEEP_SLEEP_WAKE_VALID_GPIO_MASK & pinBit(BUTTON_PIN)) != 0,
+              "BUTTON_PIN nem tud deep sleepbol ebreszteni ezen a chipen!");
+
 bool otaIsRunning() {
   return (otaMode != OTA_NORMAL_MODE);
 }
@@ -492,7 +562,7 @@ static void otaAbort(const String& msg) {
   snprintf(e, sizeof(e), "[ota] abort: %.60s", msg.c_str());
   diagLog(e);
   if (pOtaTx) {
-    String result = String((char)0x0F) + "ERR: " + msg;
+    String result = String((char)OTA_TX_RESULT) + "ERR: " + msg;
     pOtaTx->setValue(result.c_str());
     pOtaTx->notify();
     delay(200);
@@ -544,7 +614,7 @@ static void otaWriteBinary(fs::FS& fs, const char* path, uint8_t* dat, int len) 
     }
 
     if (pOtaTx) {
-      String result = String((char)0x0F) + "ERR: SPIFFS full";
+      String result = String((char)OTA_TX_RESULT) + "ERR: SPIFFS full";
       pOtaTx->setValue(result.c_str());
       pOtaTx->notify();
       delay(200);
@@ -621,7 +691,7 @@ void sendOtaResult(const String& result) {  // [MOD-25] volt: érték szerint (m
 // false = a telepítés MEGBUKOTT. A hívó ilyenkor kötelezően visszaállítja az OTA
 // állapotgépet — enélkül `OTA_INSTALL_MODE`-ban ragadtunk (lásd updateFromFS).
 bool performUpdate(Stream& updateSource, size_t updateSize) {
-  String result = String((char)0x0F);
+  String result = String((char)OTA_TX_RESULT);
 
   DBG("=== OTA DEBUG START ===");
 
@@ -994,14 +1064,15 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
     // [FIX-ESP-62] Csonka csomagnál eddig a fejléc-mezőket a BLE értékpuffer VÉGÉN
     // TÚL olvastuk (0xFB: pData[1]; 0xFE/0xFF: pData[1..4]). A 0xFC-nek már volt
     // hossz-őre ([FIX-ESP-51] mellett), a többinek nem — pótolva.
-    const int needLen = (pData[0] == 0xFB) ? 2 : ((pData[0] == 0xFE || pData[0] == 0xFF) ? 5 : 1);
+    const int needLen = (pData[0] == OTA_RX_PART_CHUNK) ? 2
+                        : ((pData[0] == OTA_RX_TOTAL_SIZE || pData[0] == OTA_RX_BEGIN) ? 5 : 1);
     if (len < needLen) {
       DBG_P("OTA packet too short, cmd=0x");
       DBG_VLN(pData[0], HEX);
       return;
     }
 
-    if (pData[0] == 0xFB) {
+    if (pData[0] == OTA_RX_PART_CHUNK) {
       if (otaBuf) {
         int base = pData[1] * otaMTU;
         for (int x = 0; x < len - 2; x++) {
@@ -1009,14 +1080,14 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
         }
       }
 
-    } else if (pData[0] == 0xFC) {
+    } else if (pData[0] == OTA_RX_PART_END) {
       OTA_DBG_P("0xFC part=");
       OTA_DBG_VLN((pData[3] * 256) + pData[4]);
       if (len < 9) {
         DBG("0xFC too short (no CRC) — re-requesting part");
         otaPartRetry++;
         if (otaPartRetry <= MAX_PART_RETRY && pOtaTx) {
-          uint8_t rq[] = { 0xF1, (uint8_t)(otaExpectedPart / 256), (uint8_t)(otaExpectedPart % 256) };
+          uint8_t rq[] = { OTA_TX_REQ_PART, (uint8_t)(otaExpectedPart / 256), (uint8_t)(otaExpectedPart % 256) };
           pOtaTx->setValue(rq, 3);
           pOtaTx->notify();
         } else {
@@ -1040,12 +1111,12 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
         }
       }
 
-    } else if (pData[0] == 0xFD) {
+    } else if (pData[0] == OTA_RX_FILE_DEL) {
       if (FLASH.exists("/update.bin")) {
         FLASH.remove("/update.bin");
       }
 
-    } else if (pData[0] == 0xFE) {
+    } else if (pData[0] == OTA_RX_TOTAL_SIZE) {
       otaReceivedBytes = 0;
       otaTotalBytes = ((uint32_t)pData[1] << 24) | ((uint32_t)pData[2] << 16) | ((uint32_t)pData[3] << 8) | ((uint32_t)pData[4]);
       uint32_t fsFree = FLASH.totalBytes() - FLASH.usedBytes();
@@ -1063,7 +1134,7 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
         DBG_VLN(fsFree);
 
         if (pOtaTx) {
-          String result = String((char)0x0F) + "ERR: SPIFFS too small (need " + String(otaTotalBytes + SPIFFS_OVERHEAD) + ", have " + String(fsFree) + ")";
+          String result = String((char)OTA_TX_RESULT) + "ERR: SPIFFS too small (need " + String(otaTotalBytes + SPIFFS_OVERHEAD) + ", have " + String(fsFree) + ")";
           pOtaTx->setValue(result.c_str());
           pOtaTx->notify();
           delay(200);
@@ -1075,7 +1146,7 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
         return;
       }
 
-    } else if (pData[0] == 0xFF) {
+    } else if (pData[0] == OTA_RX_BEGIN) {
       otaParts = (pData[1] * 256) + pData[2];
       otaMTU = (pData[3] * 256) + pData[4];
       otaCur = 0;
@@ -1091,13 +1162,13 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
         DBG_P("OTA parts: ");
         DBG_VLN(otaParts);
         if (pOtaTx) {
-          uint8_t rq[] = { 0xF1, 0x00, 0x00 };
+          uint8_t rq[] = { OTA_TX_REQ_PART, 0x00, 0x00 };
           pOtaTx->setValue(rq, 3);
           pOtaTx->notify();
         }
       }
 
-    } else if (pData[0] == 0xEF) {
+    } else if (pData[0] == OTA_RX_FS_FORMAT) {
       FLASH.format();
       otaSendSize = true;
     }
@@ -1531,12 +1602,12 @@ void setup() {
 
   DBG("Boot");
 
-  if (!SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED)) {
+  if (!FLASH.begin(FORMAT_SPIFFS_IF_FAILED)) {
     DBG("SPIFFS mount fail");
   }
 
-  if (SPIFFS.exists("/update.bin")) {
-    File f = SPIFFS.open("/update.bin");
+  if (FLASH.exists("/update.bin")) {
+    File f = FLASH.open("/update.bin");
     if (f) {
       bool isDir = f.isDirectory();
       f.close();
@@ -1545,7 +1616,7 @@ void setup() {
       } else {
         DBG("Stale update.bin removed");
       }
-      SPIFFS.remove("/update.bin");
+      FLASH.remove("/update.bin");
       delay(100);
     }
   }
@@ -1592,7 +1663,6 @@ void setup() {
   esp_reset_reason_t resetReason = esp_reset_reason();
   lastBootResetReason = resetReason;  // [FIX-ESP-19] globális mentés
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  bootMagic = BOOT_MAGIC;
 
   DBG("");
   DBG("====================================");
@@ -2076,9 +2146,7 @@ void failSafeMode() {
     DBG("FAILSAFE entry → main+fan state zeroed (RTC+NVS)");
   }
 
-  digitalWrite(RELAY_FAN1, HIGH);
-  digitalWrite(RELAY_FAN2, HIGH);
-  digitalWrite(RELAY_FAN3, HIGH);
+  fanRelaysOff();
   digitalWrite(RELAY_MAIN, HIGH);
   digitalWrite(RELAY_EN, LOW);
   relaysEnabled = false;  // [FIX-ESP-60] a tápengedély fizikailag LOW → a flag se maradjon true
@@ -2196,9 +2264,7 @@ void setFanZone(int zone, CommandSource source) {
     return;
   }
 
-  digitalWrite(RELAY_FAN1, HIGH);
-  digitalWrite(RELAY_FAN2, HIGH);
-  digitalWrite(RELAY_FAN3, HIGH);
+  fanRelaysOff();
 
   pendingZone = zone;
   zoneChangeStart = now;
@@ -2430,9 +2496,7 @@ void deactivateMain() {
   savedMain = 0;
   savedMainMagic = SAVED_MAIN_MAGIC;
   // MAIN OFF → a ventilátor táp nélkül marad: fan-relék OFF + zóna nullázása (folyamatban lévő váltás törlése is)
-  digitalWrite(RELAY_FAN1, HIGH);
-  digitalWrite(RELAY_FAN2, HIGH);
-  digitalWrite(RELAY_FAN3, HIGH);
+  fanRelaysOff();
   portENTER_CRITICAL(&zoneMux);
   currentZone = 0;
   pendingZone = 0;
@@ -2446,9 +2510,7 @@ void deactivateMain() {
 
 // ===================== RELAY CONTROL =====================
 void enableRelays() {
-  digitalWrite(RELAY_FAN1, HIGH);
-  digitalWrite(RELAY_FAN2, HIGH);
-  digitalWrite(RELAY_FAN3, HIGH);
+  fanRelaysOff();
   digitalWrite(RELAY_MAIN, HIGH);
   delay(10);
   digitalWrite(RELAY_EN, HIGH);
@@ -2463,9 +2525,7 @@ void enableRelays() {
 }
 
 void disableRelays() {
-  digitalWrite(RELAY_FAN1, HIGH);
-  digitalWrite(RELAY_FAN2, HIGH);
-  digitalWrite(RELAY_FAN3, HIGH);
+  fanRelaysOff();
   digitalWrite(RELAY_MAIN, HIGH);
   delay(10);
   digitalWrite(RELAY_EN, LOW);
@@ -2513,9 +2573,7 @@ void relayBootTest() {
   DBG("Relay boot-test: start (RELAY_MAIN kihagyva)");
 
   // Minden relé OFF (aktív-LOW → HIGH=OFF), RELAY_MAIN is OFF, majd táp be
-  digitalWrite(RELAY_FAN1, HIGH);
-  digitalWrite(RELAY_FAN2, HIGH);
-  digitalWrite(RELAY_FAN3, HIGH);
+  fanRelaysOff();
   digitalWrite(RELAY_MAIN, HIGH);
   delay(10);
   digitalWrite(RELAY_EN, HIGH);
@@ -2530,9 +2588,7 @@ void relayBootTest() {
   for (int i = 0; i < 3; i++) {
     esp_task_wdt_reset();
     // Garancia: egyszerre csak EGY fan aktív — előbb mindet OFF, majd csak az egyet ON (a ciklusvégi GAP ad elengedési időt)
-    digitalWrite(RELAY_FAN1, HIGH);
-    digitalWrite(RELAY_FAN2, HIGH);
-    digitalWrite(RELAY_FAN3, HIGH);
+    fanRelaysOff();
     DBG_P("Relay test FAN");
     DBG_V(i + 1);
     DBG(" ON");
@@ -2551,9 +2607,7 @@ void relayBootTest() {
   }
 
   // Biztos OFF + táp ki
-  digitalWrite(RELAY_FAN1, HIGH);
-  digitalWrite(RELAY_FAN2, HIGH);
-  digitalWrite(RELAY_FAN3, HIGH);
+  fanRelaysOff();
   digitalWrite(RELAY_MAIN, HIGH);
   delay(10);
   digitalWrite(RELAY_EN, LOW);
@@ -2575,63 +2629,53 @@ void relayBootTest() {
 #endif
 
 // ===================== LED HANDLING =====================
+// Szabályos villogás: LED_BLINK_INTERVAL fél-periódussal billeg.
+static void ledBlink(uint8_t pin, unsigned long now, unsigned long& lastToggle, bool& state) {
+  if (now - lastToggle > LED_BLINK_INTERVAL) {
+    state = !state;
+    digitalWrite(pin, state ? HIGH : LOW);
+    lastToggle = now;
+  }
+}
+
+// Életjel: HEARTBEAT_INTERVAL-onként egy HEARTBEAT_PULSE hosszúságú felvillanás.
+static void ledHeartbeat(uint8_t pin, unsigned long now, unsigned long& lastAt, bool& inPulse) {
+  if (!inPulse) {
+    if (now - lastAt >= HEARTBEAT_INTERVAL) {
+      digitalWrite(pin, HIGH);
+      inPulse = true;
+      lastAt = now;
+    } else {
+      digitalWrite(pin, LOW);
+    }
+  } else if (now - lastAt >= HEARTBEAT_PULSE) {
+    digitalWrite(pin, LOW);
+    inPulse = false;
+  }
+}
+
+// A piros és a sárga ág eddig szó szerint ugyanazt a villogás/életjel-szerkezetet
+// másolta le, csak más lábbal és más állapotváltozókkal (~100 sor). A viselkedés
+// azonos, csak a két minta van megnevezve.
 void handleLEDs(unsigned long currentMillis) {
-  if (otaIsRunning()) {
-    return;
-  }
+  if (otaIsRunning()) return;  // OTA alatt az otaLoop() villogtatja a LED-eket
 
+  // PIROS = BLE-állapot
   if (bleConnected) {
-    digitalWrite(LED_RED, HIGH);
-
+    digitalWrite(LED_RED, HIGH);  // kapcsolat él → folyamatos
   } else if (manualMode) {
-    digitalWrite(LED_RED, LOW);
-
-  } else if (bleEnabled && !bleConnected) {
-    if (currentMillis - lastRedToggle > LED_BLINK_INTERVAL) {
-      redLedState = !redLedState;
-      digitalWrite(LED_RED, redLedState ? HIGH : LOW);
-      lastRedToggle = currentMillis;
-    }
-
+    digitalWrite(LED_RED, LOW);  // kézi mód → BLE szándékosan ki
+  } else if (bleEnabled) {       // (ide már csak !bleConnected mellett jutunk)
+    ledBlink(LED_RED, currentMillis, lastRedToggle, redLedState);  // hirdet, kapcsolatra vár
   } else {
-    if (!heartbeatPulse_red) {
-      if (currentMillis - lastHeartbeat_red >= HEARTBEAT_INTERVAL) {
-        digitalWrite(LED_RED, HIGH);
-        heartbeatPulse_red = true;
-        lastHeartbeat_red = currentMillis;
-      } else {
-        digitalWrite(LED_RED, LOW);
-      }
-    } else {
-      if (currentMillis - lastHeartbeat_red >= HEARTBEAT_PULSE) {
-        digitalWrite(LED_RED, LOW);
-        heartbeatPulse_red = false;
-      }
-    }
+    ledHeartbeat(LED_RED, currentMillis, lastHeartbeat_red, heartbeatPulse_red);
   }
 
+  // SÁRGA = relé-/görgő-állapot
   if (relaysEnabled && mainActive) {
-    if (currentMillis - lastYellowToggle > LED_BLINK_INTERVAL) {
-      yellowLedState = !yellowLedState;
-      digitalWrite(LED_YELLOW, yellowLedState ? HIGH : LOW);
-      lastYellowToggle = currentMillis;
-    }
-
+    ledBlink(LED_YELLOW, currentMillis, lastYellowToggle, yellowLedState);
   } else {
-    if (!heartbeatPulse) {
-      if (currentMillis - lastHeartbeat >= HEARTBEAT_INTERVAL) {
-        digitalWrite(LED_YELLOW, HIGH);
-        heartbeatPulse = true;
-        lastHeartbeat = currentMillis;
-      } else {
-        digitalWrite(LED_YELLOW, LOW);
-      }
-    } else {
-      if (currentMillis - lastHeartbeat >= HEARTBEAT_PULSE) {
-        digitalWrite(LED_YELLOW, LOW);
-        heartbeatPulse = false;
-      }
-    }
+    ledHeartbeat(LED_YELLOW, currentMillis, lastHeartbeat, heartbeatPulse);
   }
 }
 
@@ -2723,7 +2767,7 @@ void otaLoop() {
           unsigned long x = FLASH.totalBytes();
           unsigned long y = FLASH.usedBytes();
           uint8_t fSize[] = {
-            0xEF,
+            OTA_TX_FS_INFO,
             (uint8_t)(x >> 16),
             (uint8_t)(x >> 8),
             (uint8_t)x,
@@ -2768,7 +2812,7 @@ void otaLoop() {
             snprintf(e, sizeof(e), "[ota] crc retry part=%d try=%d", otaCur, otaPartRetry);
             diagLog(e);
             otaExpectedPart = otaCur;  // [FIX-ESP-35] ugyanezt a partot várjuk vissza
-            uint8_t rq[] = { 0xF1, (uint8_t)(otaCur / 256), (uint8_t)(otaCur % 256) };
+            uint8_t rq[] = { OTA_TX_REQ_PART, (uint8_t)(otaCur / 256), (uint8_t)(otaCur % 256) };
             pOtaTx->setValue(rq, 3);
             pOtaTx->notify();
             delay(50);
@@ -2784,7 +2828,7 @@ void otaLoop() {
         if (otaMode != OTA_UPDATE_MODE) break;
 
         if (otaCur + 1 == otaParts) {
-          uint8_t com[] = { 0xF2, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
+          uint8_t com[] = { OTA_TX_COMPLETE, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
           pOtaTx->setValue(com, 3);
           pOtaTx->notify();
           delay(50);
@@ -2795,7 +2839,7 @@ void otaLoop() {
           otaMode = OTA_INSTALL_MODE;
         } else {
           otaExpectedPart = otaCur + 1;  // [FIX-ESP-35] ezt várjuk vissza
-          uint8_t rq[] = { 0xF1, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
+          uint8_t rq[] = { OTA_TX_REQ_PART, (uint8_t)((otaCur + 1) / 256), (uint8_t)((otaCur + 1) % 256) };
           pOtaTx->setValue(rq, 3);
           pOtaTx->notify();
           delay(50);

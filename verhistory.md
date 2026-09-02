@@ -485,3 +485,75 @@ figyelmeztetés-mentesen** fordul `esp32:esp32@3.3.11` alatt. Flash C3: 685 895 
 *Ellenőrzés: mindkét cél `--warnings all` mellett hiba- és figyelmeztetés-mentesen fordul
 `esp32:esp32@3.3.11` alatt (C3 685 799 B / 49%, C6 787 842 B / 57%).*
 
+---
+
+## v7.17.0 — Karbantarthatóság: duplikációk kiemelése + fordítási idejű védőhálók
+
+*Ez a kör szándékosan **viselkedés-semleges**: nem hibát javít, hanem azt csökkenti, hogy
+a következő módosítás hibát tudjon becsempészni. A bináris nem lett bitre azonos (ez egy
+de-duplikációtól nem is várható), viszont **kisebb** lett: C3 685 799 → 685 717 bájt,
+C6 787 842 → 787 760 bájt.*
+
+### Fordítási idejű pin-ellenőrzések (új védőháló)
+
+A `PINS` blokk két cél (C3/C6) **kézzel karbantartott** listája, ahol a legkönnyebben
+elkövethető hiba, hogy két funkció ugyanarra a GPIO-ra kerül — a C3-on ez különösen éles
+(GPIO20/21 = U0RXD/U0TXD, GPIO2/8/9 = strapping lábak). Két `static_assert` került be:
+
+- **Pin-ütközés:** a használt lábakból bitmaszk készül (`pinBit`), és a `pinCount()`
+  `constexpr` bitszámláló eredményét a listaelemek darabszámához hasonlítjuk. Ha két
+  funkció ugyanarra a lábra kerül, a maszk kevesebb bites → **fordítási hiba**, nem pedig
+  rejtélyes működés a panelon. A `FAN_SENSE_ENABLE` / C6-specifikus lábak feltételesen
+  kerülnek a maszkba és a darabszámba.
+- **Ébresztő láb:** `SOC_GPIO_DEEP_SLEEP_WAKE_VALID_GPIO_MASK & pinBit(BUTTON_PIN)` — a
+  gombnak deep sleepből kell ébresztenie, erre csak az RTC/LP-képes lábak alkalmasak
+  (C3: GPIO0–5, C6: GPIO0–7). Rossz láb esetén az eszköz **egyszerűen nem ébredne fel**;
+  most ez fordításkor derül ki.
+
+  *Mindkét ellenőrzés kipróbálva: szándékos ütközés (`FAN2_SENSE_PIN` 7 → 6) és nem
+  ébresztésképes gombláb (`BUTTON_PIN` 3 → 7) mellett a fordítás a saját üzenetünkkel áll le.*
+
+  A blokk szándékosan az **első függvénydefiníció után** áll, nem a `PINS` mellett: az
+  `.ino` automatikus prototípus-generálása a legelső függvénydefiníció elé szúrja be a
+  prototípusokat, így egy korán definiált `constexpr` függvény eltolná a beszúrási pontot
+  (a `CommandSource` enum elé) és elrontaná a fordítást.
+
+### Duplikációk kiemelése (viselkedés változatlan)
+
+- **`fanRelaysOff()`**: a „mindhárom fokozat-relé OFF" hármas **nyolc** helyen szerepelt
+  szó szerint (break-before-make, MAIN lekapcsolás, `enableRelays`/`disableRelays`,
+  failsafe, bootteszt ×3). Több helyen épp az a lényeg, hogy **egyik** fan se maradjon
+  behúzva — jobb, ha ez egy néven nevezett művelet, mint három egymás mellé másolt sor.
+- **`ledBlink()` / `ledHeartbeat()`**: a piros és a sárga LED ága szó szerint ugyanazt a
+  villogás- és életjel-szerkezetet másolta le, csak más lábbal és más állapotváltozókkal.
+  A `handleLEDs()` ~100 sorról ~25-re rövidült, az állapotváltozók referenciaként mennek
+  át. Egyúttal kiesett a `bleEnabled && !bleConnected` redundáns fele (abba az ágba
+  eleve csak `!bleConnected` mellett lehet eljutni).
+
+### Olvashatóság / konzisztencia
+
+- **OTA opkódok néven nevezve**: a `0xFB`/`0xFC`/`0xFD`/`0xFE`/`0xFF`/`0xEF` és a
+  `0x0F`/`0xF1`/`0xF2` eddig nyers hex-literálként szerepelt szétszórva, a protokoll
+  leírása pedig kizárólag a `sender/ota.py`-ban és a READMÉ-ben élt. Mostantól
+  `OTA_RX_*` / `OTA_TX_*` konstansok, a csomagformátummal a definíciójuk mellett.
+  (Az érték egyetlen bitje sem változott; a `0xEF` továbbra is két különböző dolgot
+  jelent a két irányban — ezt most már a két külön név is mutatja.)
+- **`FLASH` vs. `SPIFFS`**: a `setup()` négy helyen közvetlenül `SPIFFS.`-t hívott,
+  miközben a kód többi része a `FLASH` makrót használja. Egységesítve — egy esetleges
+  későbbi fájlrendszer-váltás így tényleg egyetlen `#define` módosítása.
+- **Halott kód**: a `bootMagic` RTC_NOINIT változó + `BOOT_MAGIC` makró csak írva volt,
+  soha nem olvasva — törölve.
+- `sender/ota.py`: `from __future__ import print_function` (Python 2-es maradvány) törölve;
+  a `bleak` amúgy is Python 3.8+-t igényel.
+
+### CI: a sketch figyelmeztetései hibának számítanak
+
+A GitHub Actions build mostantól `--warnings all`-lal fordít, és **elbukik**, ha a
+`FanController_OTA_debug.ino` sorára esik `warning:`. Szándékosan csak a saját forrásunk
+figyelmeztetéseire — egy jövőbeli core-/könyvtár-frissítés zaja ne törje a CI-t olyasmin,
+amit nem mi javítunk. Ez pont azt a fajta dolgot fogja meg automatikusan, amit a 3.3.11-re
+váltáskor kézzel kellett észrevenni (a NimBLE alatt `[[deprecated]]` `BLE2902`).
+
+*Ellenőrzés: mindkét cél `--warnings all` mellett hiba- és figyelmeztetés-mentesen fordul
+`esp32:esp32@3.3.11` alatt; a CI-kapu logikája helyben kipróbálva mindkét irányban.*
+
